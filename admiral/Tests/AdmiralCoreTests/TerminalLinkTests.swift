@@ -61,6 +61,62 @@ final class TerminalLinkTests: XCTestCase {
         XCTAssertEqual(link, .file(URL(fileURLWithPath: "/w/a.md.")))
     }
 
+    /// Only http/https/mailto open as web links. Any other scheme a session prints — a system
+    /// settings pane, a custom app URL handler, ssh — resolves to nothing, so a click runs nothing.
+    func testOnlyHttpHttpsAndMailtoOpenAsWebLinks() {
+        for ok in ["http://example.com", "HTTPS://example.com/x", "mailto:a@example.com"] {
+            XCTAssertEqual(TerminalLink.resolve(ok, cwd: "/work", fileExists: { _ in false }),
+                           .web(URL(string: ok)!), ok)
+        }
+        for bad in ["x-apple.systempreferences:com.apple.preference.security", "ssh://host",
+                    "vscode://file/etc/hosts", "javascript:alert(1)", "smb://server/share",
+                    "someapp://do-something"] {
+            XCTAssertEqual(TerminalLink.resolve(bad, cwd: "/work", fileExists: { _ in true }), .none, bad)
+        }
+        XCTAssertFalse(TerminalLink.isWebURL(URL(string: "ftp://example.com")!))
+    }
+
+    /// A file opening would run — an app bundle, a script by extension, anything with the
+    /// executable bit, or a link to one — resolves to `.reveal` (Finder), never `.file`.
+    /// Ordinary files and folders still open. Real files in a unique temp dir; nothing is run.
+    func testRunnableFilesAreRevealedNotOpened() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("link-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }   // removes only the dir this test created
+
+        func file(_ name: String, mode: Int = 0o644) throws -> URL {
+            let url = dir.appendingPathComponent(name)
+            try Data("inert\n".utf8).write(to: url)
+            try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path)
+            return url
+        }
+        let notes = try file("notes.md")
+        let folder = dir.appendingPathComponent("plain-folder")
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let tool = try file("tool-no-extension", mode: 0o755)
+        let command = try file("go.command")
+        let webloc = try file("site.webloc")
+        let bundle = dir.appendingPathComponent("Thing.app/Contents/MacOS")
+        try fm.createDirectory(at: bundle, withIntermediateDirectories: true)
+        let renamedBundle = dir.appendingPathComponent("Disguised")
+        try fm.createDirectory(at: renamedBundle.appendingPathComponent("Contents/MacOS"),
+                               withIntermediateDirectories: true)
+        let alias = dir.appendingPathComponent("readme.md")
+        try fm.createSymbolicLink(at: alias, withDestinationURL: tool)
+
+        let cwd = dir.path
+        XCTAssertEqual(TerminalLink.resolve("notes.md", cwd: cwd), .file(notes.standardizedFileURL))
+        XCTAssertEqual(TerminalLink.resolve("plain-folder", cwd: cwd), .file(folder.standardizedFileURL))
+        for (raw, url) in [("tool-no-extension", tool), ("go.command", command), ("site.webloc", webloc),
+                           ("Thing.app", dir.appendingPathComponent("Thing.app")),
+                           ("Disguised", renamedBundle), ("readme.md", alias)] {
+            XCTAssertEqual(TerminalLink.resolve(raw, cwd: cwd), .reveal(url.standardizedFileURL), raw)
+        }
+        XCTAssertEqual(TerminalLink.forFile(notes), .file(notes))
+        XCTAssertEqual(TerminalLink.forFile(tool), .reveal(tool))
+    }
+
     func testEmptyLinkIsNone() {
         XCTAssertEqual(TerminalLink.resolve("   ", cwd: "/work", fileExists: { _ in true }), .none)
     }

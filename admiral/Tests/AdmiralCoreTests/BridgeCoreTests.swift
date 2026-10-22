@@ -93,6 +93,124 @@ final class BridgeCoreTests: XCTestCase {
         XCTAssertEqual(host.prompts, [TerminalPrompt(typed: "@alice: hello there [no reply needed]")])
     }
 
+    // MARK: - Who can take a typed message (PeerBlock)
+
+    private static let bash = AgentType(id: "bash", displayName: "Bash", executableName: "zsh",
+                                        defaultArgs: ["-il"], symbolName: "terminal")
+
+    /// A bash tab reads typed text as shell input, so a hail is refused and nothing is typed.
+    func testHailRefusesATabThatIsNotAClaudeSession() {
+        let (bridge, host) = makeBridge()
+        manager.register(AgentSession(callsign: "sh", agentType: Self.bash, cwd: "/s", token: "S"),
+                         handle: FakeTerminalHost.Handle(pid: 3))
+        let result = bridge.hail(fromToken: "A", to: "sh", body: "inert text")
+        XCTAssertFalse(result.ok)
+        XCTAssertEqual(result.message, "not delivered: @sh is not a claude session — typed text "
+            + "would go to its shell; nothing was typed")
+        XCTAssertTrue(host.sent.isEmpty, host.combined)
+    }
+
+    /// A claude tab whose claude exited is a shell again.
+    func testHailRefusesAClaudeTabWhoseClaudeExited() {
+        let (bridge, host) = makeBridge()
+        manager.register(AgentSession(callsign: "gone", cwd: "/g", claudeSessionID: "sid-g",
+                                      status: .shell, token: "G"),
+                         handle: FakeTerminalHost.Handle(pid: 3))
+        let result = bridge.hail(fromToken: "A", to: "gone", body: "inert text")
+        XCTAssertFalse(result.ok)
+        XCTAssertEqual(result.message,
+                       "not delivered: @gone has no claude running (it is back at its shell) — nothing was typed")
+        XCTAssertTrue(host.sent.isEmpty, host.combined)
+    }
+
+    func testBroadcastSkipsTabsThatCannotTakeATypedMessageAndSaysWhy() {
+        let (bridge, host) = makeBridge()
+        manager.register(AgentSession(callsign: "sh", agentType: Self.bash, cwd: "/s", token: "S"),
+                         handle: FakeTerminalHost.Handle(pid: 3))
+        manager.register(AgentSession(callsign: "gone", cwd: "/g", claudeSessionID: "sid-g",
+                                      status: .shell, token: "G"),
+                         handle: FakeTerminalHost.Handle(pid: 4))
+        let result = bridge.broadcast(fromToken: "A", body: "all hands")
+        XCTAssertEqual(result.message, "broadcast to 1 station(s); skipped 2 that cannot take a typed "
+            + "message: @sh (not a claude session), @gone (claude exited)")
+        XCTAssertEqual(host.prompts.count, 1, "only bob is typed to")
+    }
+
+    /// A temp claude home holding `sessions/<pid>.json` files for one session id.
+    private func claudeHome(_ files: [(pid: Int, status: String, updatedAt: Double)], sid: String) -> URL {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bridge-claude-home-\(UUID().uuidString)")
+        let dir = home.appendingPathComponent("sessions")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for f in files {
+            let json = #"{"pid":\#(f.pid),"sessionId":"\#(sid)","status":"\#(f.status)","updatedAt":\#(f.updatedAt)}"#
+            try? json.write(to: dir.appendingPathComponent("\(f.pid).json"), atomically: true, encoding: .utf8)
+        }
+        return home
+    }
+
+    private func bridgeWithTarget(home: URL) -> (BridgeCore, FakeTerminalHost) {
+        let host = FakeTerminalHost()
+        let manager = SessionManager(host: host, claudeHome: home, executablePath: "/bin/echo")
+        manager.register(AgentSession(callsign: "alice", cwd: "/a", claudeSessionID: "sid-a", token: "A"),
+                         handle: FakeTerminalHost.Handle(pid: 1))
+        manager.register(AgentSession(callsign: "bob", cwd: "/b", claudeSessionID: "sid-b", token: "B"),
+                         handle: FakeTerminalHost.Handle(pid: 2))
+        self.manager = manager
+        return (BridgeCore(manager: manager, idGenerator: { "id123" }), host)
+    }
+
+    /// Typed text behind an open dialog answers the dialog. claude's "waiting" folds into
+    /// `.unknown`, so it is read live from the newest session file.
+    func testHailRefusesASessionWaitingOnADialog() {
+        let home = claudeHome([(10, "idle", 100), (11, "waiting", 200)], sid: "sid-b")
+        let (bridge, host) = bridgeWithTarget(home: home)
+        let result = bridge.hail(fromToken: "A", to: "bob", body: "inert text")
+        XCTAssertFalse(result.ok)
+        XCTAssertEqual(result.message, "not delivered: @bob is waiting on a dialog (a permission prompt "
+            + "or a question) — nothing was typed; try again once it is answered")
+        XCTAssertTrue(host.sent.isEmpty, host.combined)
+    }
+
+    /// A stale "waiting" left by an older pid does not hold a session that has moved on.
+    func testHailReadsOnlyTheNewestSessionFile() {
+        let home = claudeHome([(10, "waiting", 100), (11, "idle", 200)], sid: "sid-b")
+        let (bridge, _) = bridgeWithTarget(home: home)
+        XCTAssertTrue(bridge.hail(fromToken: "A", to: "bob", body: "inert text").ok)
+    }
+
+    /// `.unknown` is also a fresh tab with no session file yet: it is typed to as before.
+    func testHailStillReachesAFreshTabWithNoSessionFile() {
+        let (bridge, host) = makeBridge()
+        XCTAssertEqual(manager.session(forCallsign: "bob")?.status, .unknown)
+        XCTAssertTrue(bridge.hail(fromToken: "A", to: "bob", body: "hi").ok)
+        XCTAssertEqual(host.prompts.count, 1)
+    }
+
+    /// Escape sequences and control bytes never reach the PTY from a hail.
+    func testHailSanitizesItsBody() {
+        let (bridge, host) = makeBridge()
+        XCTAssertTrue(bridge.hail(fromToken: "A", to: "bob", body: "hi\u{1b}[2J\u{03}there").ok)
+        XCTAssertEqual(host.prompts, [TerminalPrompt(typed: "@alice: hi[2Jthere [no reply needed]")])
+    }
+
+    /// A newline typed into claude submits early; the body goes as a paste instead.
+    func testAShortHailWithANewlineIsPasted() {
+        let (bridge, host) = makeBridge()
+        XCTAssertTrue(bridge.hail(fromToken: "A", to: "bob", body: "line one\rline two").ok)
+        XCTAssertEqual(host.prompts, [TerminalPrompt(typedBefore: "@alice: ", pasted: "line one\nline two",
+                                                     typedAfter: " [no reply needed]")])
+    }
+
+    /// The operator's inject is not gated (it may type into a bash tab) but is sanitized.
+    func testOperatorInjectIsNotGatedButIsSanitized() {
+        let (bridge, host) = makeBridge()
+        manager.register(AgentSession(callsign: "sh", agentType: Self.bash, cwd: "/s", token: "S"),
+                         handle: FakeTerminalHost.Handle(pid: 3))
+        XCTAssertTrue(bridge.inject(to: "sh", text: "inert\u{1b}[A\u{15}text").ok)
+        XCTAssertEqual(host.prompts, [TerminalPrompt(typed: "inert[Atext")])
+    }
+
     /// The prefix is the only thing identifying the sender — typed text carries no
     /// metadata, so losing it makes every hail anonymous and unanswerable.
     func testWireCarriesTheSender() {

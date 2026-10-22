@@ -22,7 +22,8 @@ let argv = CommandLine.arguments
 guard argv.count >= 3 else { exit(0) }
 let cliType = argv[1]
 let event = argv[2]
-let token = ProcessInfo.processInfo.environment["ADMIRAL_SESSION"]
+// Sanitized at the door like a payload session id: it names a directory under `sessions/`.
+let token = ProcessInfo.processInfo.environment["ADMIRAL_SESSION"].map(AdmiralPaths.sanitized)
 
 let payload = FileHandle.standardInput.readDataToEndOfFile()
 if let out = await HookDispatcher.handle(

@@ -1,13 +1,39 @@
 import Foundation
 
+/// Who is calling the MCP server. Set by the TRANSPORT, never read from the request: the
+/// bridge socket is always `.session` (whatever its envelope's token says — a token of
+/// `admiral-operator` there is just a token that names no tab), and only the operator HTTP
+/// endpoint, after checking the operator bearer token, passes `.operator`.
+public enum MCPCaller: Sendable, Equatable {
+    /// The operator: `POST /mcp` with the operator token, or Admiral itself (probes).
+    case `operator`
+    /// A hosted tab, named by its `ADMIRAL_SESSION` token.
+    case session(String)
+
+    /// The token `BridgeCore` resolves the caller by. The operator's names no tab, so tools
+    /// that need a sender (hail, set_goal_self, …) fail for it as they always have.
+    var bridgeToken: String {
+        switch self {
+        case .operator: return OperatorTokenStore.mcpSessionToken
+        case let .session(token): return token
+        }
+    }
+}
+
 /// Minimal MCP JSON-RPC dispatcher over `BridgeCore`. Handles `initialize`,
-/// `tools/list`, and `tools/call`; the caller's identity arrives as a session token
-/// (the HTTP layer reads it from `X-Admiral-Session`). Built and tested, but not
-/// auto-wired into spawned claudes — that wiring is added later.
+/// `tools/list`, and `tools/call` for a caller the transport identified (`MCPCaller`).
 @MainActor
 public struct MCPServer {
     private let bridge: BridgeCore
     public init(bridge: BridgeCore) { self.bridge = bridge }
+
+    /// Tools only the operator may call: they act on any tab with no sender identity (typing
+    /// into it, reading its screen or transcript, closing it). A session caller is refused
+    /// them and never sees them in `tools/list`.
+    public static let operatorTools: Set<String> = [
+        "inject", "send_keys", "read_screen", "read_recent", "close_session", "commission_bash",
+        "list_sessions", "session_status", "focus", "fleet_pr_status",
+    ]
 
     /// Tool definitions exposed to MCP clients, carrying the built-in goal guidance. The
     /// live list is `tools(guidance:)` — a session gets whatever `goal-guidance.txt` says.
@@ -65,13 +91,14 @@ public struct MCPServer {
              + "(the error lists the tabs), or a name already taken.",
              ["name": "string", "members": "string[]"]),
         tool("group_add_member",
-             "Add a tab (by callsign) to a group chat. Fails for an unknown group or callsign, "
-             + "or a tab already in it.",
+             "Add a tab (by callsign) to a group chat you are a member of. Fails for an unknown "
+             + "group or callsign, a group you are not in, or a tab already in it.",
              ["group": "string", "member": "string"]),
         tool("group_remove_member",
-             "Remove a tab (by callsign) from a group chat; the tab itself stays open. Refused "
-             + "when it would leave fewer than 2 members — delete the group instead. Fails for "
-             + "an unknown group, an unknown callsign, or a tab not in it.",
+             "Remove a tab (by callsign) from a group chat you are a member of; the tab itself "
+             + "stays open. Refused when it would leave fewer than 2 members — delete the group "
+             + "instead. Fails for an unknown group, a group you are not in, an unknown "
+             + "callsign, or a tab not in it.",
              ["group": "string", "member": "string"]),
         tool("group_rename",
              "Rename a group chat you are a member of. Fails for an unknown group, a group you "
@@ -198,7 +225,8 @@ public struct MCPServer {
              ["callsign": "string", "cwd": "string", "provider": "string?", "scratch": "boolean?",
               "output_schema": "string?"]),
         tool("set_output_schema",
-             "OPERATOR: set, replace or clear a Claude tab's output schema by callsign. Use it "
+             "Set, replace or clear a Claude tab's output schema by callsign — a session may "
+             + "name only its own tab; the operator any tab. Use it "
              + "ONLY when the user explicitly asks for a tab to return structured output — it "
              + "is optional and changes how every turn of that tab ends. With a "
              + "schema (strict JSON Schema as a JSON string, same rules as commission's "
@@ -209,10 +237,11 @@ public struct MCPServer {
              + "is listed).",
              ["callsign": "string", "schema": "string"]),
         tool("rename_station",
-             "Rename a station: yours by default, or a peer's by passing "
-             + "its current callsign as `to`. Renames BOTH the tab and the claude inside "
+             "Rename YOUR station. Renames BOTH the tab and the claude inside "
              + "it, so the name you hail by and the name it answers to cannot drift apart. "
-             + "Spaces become hyphens — the name is also the address. No-op if already "
+             + "Spaces become hyphens — the name is also the address. `to` names the tab to "
+             + "rename and is for the operator: a session may rename only itself, and another "
+             + "tab's callsign is refused. No-op if already "
              + "that name; fails if empty after sanitize or target missing.",
              ["name": "string", "to": "string?"]),
         tool("set_structured_output",
@@ -338,19 +367,25 @@ public struct MCPServer {
              ["name": "string?", "run_id": "string?", "limit": "string?"]),
     ] }
 
-    /// Transport envelope: `{"token": "<session>", "request": <jsonrpc>}`. The loopback
-    /// socket server reads one line and calls this; the token carries the caller's
-    /// `ADMIRAL_SESSION`, the request is a normal JSON-RPC message.
+    /// Transport envelope: `{"token": "<session>", "request": <jsonrpc>}`. The bridge socket
+    /// reads one line and calls this; the token carries the caller's `ADMIRAL_SESSION`, the
+    /// request is a normal JSON-RPC message. Always a SESSION caller — the socket has no
+    /// operator credential, so no token can make it one.
     public func handle(envelope data: Data) -> Data {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let token = obj["token"] as? String,
               let request = obj["request"],
               let reqData = try? JSONSerialization.data(withJSONObject: request)
         else { return Self.error(id: nil, code: -32700, message: "parse error") }
-        return handle(requestData: reqData, sessionToken: token)
+        return handle(requestData: reqData, caller: .session(token))
     }
 
+    /// A session caller's request (`.session(sessionToken)`).
     public func handle(requestData: Data, sessionToken: String) -> Data {
+        handle(requestData: requestData, caller: .session(sessionToken))
+    }
+
+    public func handle(requestData: Data, caller: MCPCaller) -> Data {
         guard let obj = try? JSONSerialization.jsonObject(with: requestData) as? [String: Any] else {
             return Self.error(id: nil, code: -32700, message: "parse error")
         }
@@ -372,17 +407,20 @@ public struct MCPServer {
             // Read the guidance file here rather than at load: this is the one moment a
             // session's tool descriptions are decided, so an edit reaches every session
             // started after it without the app restarting.
-            return Self.result(id: id, value: [
-                "tools": Self.tools(guidance: GoalGuidance.text(base: bridge.supportDir),
-                                    groups: bridge.groups != nil),
-            ])
+            var tools = Self.tools(guidance: GoalGuidance.text(base: bridge.supportDir),
+                                   groups: bridge.groups != nil)
+            if caller != .operator {
+                tools.removeAll { Self.operatorTools.contains($0["name"] as? String ?? "") }
+            }
+            return Self.result(id: id, value: ["tools": tools])
         case "tools/call":
             let params = obj["params"] as? [String: Any] ?? [:]
             guard let name = params["name"] as? String, !name.isEmpty else {
                 return Self.error(id: id, code: -32602, message: "invalid params: missing tool name")
             }
             let args = params["arguments"] as? [String: Any] ?? [:]
-            let outcome = call(name: name, args: args, token: sessionToken)
+            let outcome = refusal(of: name, args: args, for: caller)
+                ?? call(name: name, args: args, token: caller.bridgeToken)
             return Self.result(id: id, value: [
                 "content": [["type": "text", "text": outcome.message]],
                 "isError": !outcome.ok,
@@ -391,6 +429,34 @@ public struct MCPServer {
             return Self.error(id: id, code: -32601, message: "method not found: \(method)")
         }
     }
+
+    /// Why `caller` may not call `name` at all, or nil when it may. The operator may call
+    /// anything; a session is refused the operator tools, and every tool when its token
+    /// names no tab (a caller Admiral cannot place has no identity to act as), and the
+    /// own-tab tools (`ownTabTools`) when they name another tab.
+    private func refusal(of name: String, args: [String: Any], for caller: MCPCaller) -> BridgeResult? {
+        guard case let .session(token) = caller else { return nil }
+        if Self.operatorTools.contains(name) {
+            return .failure("\(name) is an operator tool: it is served only on the operator "
+                + "endpoint (POST /mcp with the operator token), never to a session")
+        }
+        guard let me = bridge.manager.session(forToken: token) else {
+            return .failure("refused: the session token names no Admiral tab, so no tool is "
+                + "available to this caller")
+        }
+        // An unknown target falls through, so the tool itself answers "no station".
+        if let key = Self.ownTabTools[name],
+           let named = (args[key] as? String)?.trimmingCharacters(in: .whitespaces), !named.isEmpty,
+           let target = bridge.manager.session(forCallsign: named), target.id != me.id {
+            return .failure("\(name) changes only your own tab (@\(me.displayTitle)); "
+                + "@\(target.displayTitle) is another tab — only the operator may change it")
+        }
+        return nil
+    }
+
+    /// Tools that change a tab's identity or how its turns end, keyed by the argument naming
+    /// the tab. A session may aim them only at itself; the operator at any tab.
+    static let ownTabTools: [String: String] = ["rename_station": "to", "set_output_schema": "callsign"]
 
     private func call(name: String, args: [String: Any], token: String) -> BridgeResult {
         switch name {

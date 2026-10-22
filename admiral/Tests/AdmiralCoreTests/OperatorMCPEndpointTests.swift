@@ -68,6 +68,45 @@ final class OperatorMCPEndpointTests: XCTestCase {
         XCTAssertTrue(text.contains("inject"), text)
     }
 
+    /// The endpoint is the operator: with the token, the operator tools run.
+    func testAuthorizedCallerRunsOperatorTools() {
+        let ep = makeEndpoint()
+        let call = Data(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sessions","arguments":{}}}"#.utf8)
+        let raw = ep.handle(request(method: "POST", path: "/mcp",
+                                    headers: ["authorization": "Bearer \(token)"], body: call))
+        let text = String(data: raw, encoding: .utf8) ?? ""
+        XCTAssertTrue(text.hasPrefix("HTTP/1.1 200"), text)
+        XCTAssertTrue(text.contains("@alice"), text)
+        XCTAssertTrue(text.contains(#""isError":false"#), text)
+    }
+
+    /// A browser page (Origin) or a DNS-rebound hostname is refused even with the token.
+    func testBrowserOriginatedRequestIsRefused403() {
+        let ep = makeEndpoint()
+        for extra in [["origin": "https://evil.example"], ["host": "evil.example:4141"]] {
+            let headers = extra.merging(["authorization": "Bearer \(token)"]) { a, _ in a }
+            let text = String(data: ep.handle(request(method: "POST", path: "/mcp", headers: headers,
+                                                      body: jsonRPCToolsList())), encoding: .utf8) ?? ""
+            XCTAssertTrue(text.hasPrefix("HTTP/1.1 403"), text)
+            XCTAssertFalse(text.contains("list_sessions"), text)
+        }
+        let loopback = ep.handle(request(method: "POST", path: "/mcp",
+                                         headers: ["authorization": "Bearer \(token)", "host": "localhost:4141"],
+                                         body: jsonRPCToolsList()))
+        XCTAssertTrue((String(data: loopback, encoding: .utf8) ?? "").hasPrefix("HTTP/1.1 200"))
+    }
+
+    /// `x-api-key` carries the token too (what Anthropic SDK clients send).
+    func testAcceptsXAPIKey() {
+        let ep = makeEndpoint()
+        let text = String(data: ep.handle(request(method: "POST", path: "/mcp", headers: ["x-api-key": token],
+                                                  body: jsonRPCToolsList())), encoding: .utf8) ?? ""
+        XCTAssertTrue(text.hasPrefix("HTTP/1.1 200"), text)
+        let wrong = String(data: ep.handle(request(method: "POST", path: "/mcp", headers: ["x-api-key": "nope"],
+                                                   body: jsonRPCToolsList())), encoding: .utf8) ?? ""
+        XCTAssertTrue(wrong.hasPrefix("HTTP/1.1 401"), wrong)
+    }
+
     func testWrongPath404() {
         let ep = makeEndpoint()
         let raw = ep.handle(request(

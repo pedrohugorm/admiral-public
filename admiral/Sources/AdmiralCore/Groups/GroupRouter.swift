@@ -2,10 +2,9 @@ import Foundation
 
 /// Who a message reaches and when.
 public struct GroupRouting: Equatable, Sendable {
-    /// Idle members: typed to now.
+    /// Idle and busy members: typed to now (claude takes a mid-turn message). A delivery that
+    /// fails is held by `GroupService` and retried when the member is idle.
     public var wake: [UUID] = []
-    /// Busy members: they keep one pending wake and get it when their turn ends.
-    public var pending: [UUID] = []
     /// Members whose claude is not running (tab back at its shell): nothing can be typed.
     public var unreachable: [UUID] = []
 }
@@ -26,8 +25,7 @@ public enum GroupRouter {
         var routing = GroupRouting()
         for id in named where id != sender {
             switch status(id) {
-            case .idle: routing.wake.append(id)
-            case .busy: routing.pending.append(id)
+            case .idle, .busy: routing.wake.append(id)
             case .shell, .unknown: routing.unreachable.append(id)
             }
         }

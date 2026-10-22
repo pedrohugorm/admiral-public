@@ -26,12 +26,15 @@ public enum GroupReminder {
             return nil
         }
         let names = GroupFiles.readCallsigns(base: base)
-        func name(_ id: UUID) -> String { names[id.uuidString] ?? String(id.uuidString.prefix(8)).lowercased() }
+        // Names on one line, so a group or callsign carrying a newline cannot add a line.
+        func name(_ id: UUID) -> String {
+            GroupPrompt.inline(names[id.uuidString] ?? String(id.uuidString.prefix(8)).lowercased())
+        }
 
         var parts: [String] = []
         let membership = groups.map { group in
             let others = group.members.filter { $0 != member }.map { "@" + name($0) }
-            return "You are @\(name(member)) in group \"\(group.name)\" with \(others.joined(separator: ", "))."
+            return "You are @\(name(member)) in group \"\(GroupPrompt.inline(group.name))\" with \(others.joined(separator: ", "))."
         }.joined(separator: "\n")
         if (try? String(contentsOf: marker, encoding: .utf8)) != membership {
             try? membership.write(to: marker, atomically: true, encoding: .utf8)

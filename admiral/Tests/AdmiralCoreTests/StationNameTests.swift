@@ -45,4 +45,12 @@ final class StationNameTests: XCTestCase {
     func testApostrophesSurvive() {
         XCTAssertEqual(StationName.sanitize("Sam's tab"), "Sam's-tab")
     }
+
+    /// A callsign is printed in group prompts and hails; one with a line break could add a line.
+    func testACallsignHoldsNoWhitespaceOrLineBreakOfAnyKind() {
+        let raw = "a\nb\rc\u{0B}d\u{0C}e\u{85}f\u{2028}g\u{2029}h\ti j\u{A0}k"
+        let clean = StationName.sanitize(raw)
+        XCTAssertEqual(clean, "a-b-c-d-e-f-g-h-i-j-k")
+        XCTAssertFalse(clean.unicodeScalars.contains { CharacterSet.whitespacesAndNewlines.contains($0) })
+    }
 }

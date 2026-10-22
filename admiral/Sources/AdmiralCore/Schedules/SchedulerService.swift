@@ -175,9 +175,18 @@ public final class SchedulerService {
             }
             schema = parsed
         }
+        // schedules/<id>.json is a file anyone with the user's access can edit after `set`
+        // checked it, and these two reach claude's command line: re-check them every run.
+        guard let model = ScheduleModel(rawValue: schedule.model ?? ScheduleModel.default.rawValue) else {
+            return end(run, as: .failed, note: "the model is not one of \(ScheduleModel.spelling)", for: schedule)
+        }
+        let effort = schedule.effort.flatMap { $0.isEmpty ? nil : $0 }
+        if let effort, ScheduleEffort(rawValue: effort) == nil {
+            return end(run, as: .failed, note: "the effort is not one of \(ScheduleEffort.spelling)", for: schedule)
+        }
         switch backend.openRunTab(name: schedule.name, cwd: schedule.cwd, scratch: schedule.scratch,
-                                  provider: schedule.provider, model: schedule.model ?? ScheduleModel.default.rawValue,
-                                  effort: schedule.effort, outputSchema: schema) {
+                                  provider: schedule.provider, model: model.rawValue,
+                                  effort: effort, outputSchema: schema) {
         case let .failure(error):
             return end(run, as: .failed, note: error.message, for: schedule)
         case let .success(tab):

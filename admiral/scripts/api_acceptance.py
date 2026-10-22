@@ -2,14 +2,17 @@
 """Acceptance: a stock Anthropic SDK client against Admiral's endpoint.
 
 Prereqs: Admiral dev build running, API Server toggled on (port 4141), and a
-managed claude tab whose name you pass as --tab.
+managed claude tab whose name you pass as --tab. Every request needs the operator
+token (Settings → Bridge & API → Copy token) in ADMIRAL_API_TOKEN; the SDK sends it
+as its API key (x-api-key).
 
-    uv run --with anthropic python scripts/api_acceptance.py --tab "Worker"
+    ADMIRAL_API_TOKEN=<token> uv run --with anthropic python scripts/api_acceptance.py --tab "Worker"
 
 The tab is routed by the required ADMIRAL_TAB_NAME header, sent here as an SDK
 default header; `model` stays a real model id and is only echoed back.
 """
 import argparse
+import os
 import anthropic
 
 MODEL = "claude-opus-4-8"
@@ -18,8 +21,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--tab", required=True, help="Admiral tab name (the ADMIRAL_TAB_NAME header)")
 parser.add_argument("--base-url", default="http://127.0.0.1:4141")
 args = parser.parse_args()
+TOKEN = os.environ["ADMIRAL_API_TOKEN"]
 
-client = anthropic.Anthropic(base_url=args.base_url, api_key="unused", max_retries=0,
+client = anthropic.Anthropic(base_url=args.base_url, api_key=TOKEN, max_retries=0,
                              default_headers={"ADMIRAL_TAB_NAME": args.tab})
 
 print("== non-streaming ==")
@@ -60,7 +64,7 @@ except anthropic.NotFoundError as e:
 
 print("== header is required ==")
 try:
-    anthropic.Anthropic(base_url=args.base_url, api_key="unused", max_retries=0).messages.create(
+    anthropic.Anthropic(base_url=args.base_url, api_key=TOKEN, max_retries=0).messages.create(
         model=MODEL, max_tokens=16, messages=[{"role": "user", "content": "x"}])
     raise SystemExit("expected BadRequestError when ADMIRAL_TAB_NAME is absent")
 except anthropic.BadRequestError as e:

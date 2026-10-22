@@ -89,11 +89,13 @@ struct AgentSessionQuery: EntityQuery, EnumerableEntityQuery, EntityStringQuery 
 enum AdmiralIntentError: Error, CustomLocalizedStringResourceConvertible {
     case notRunning
     case sessionNotFound
+    case notADirectory(String)
 
     var localizedStringResource: LocalizedStringResource {
         switch self {
         case .notRunning: return "Admiral is not running."
         case .sessionNotFound: return "That session was not found."
+        case .notADirectory(let path): return "“\(path)” is not an existing folder."
         }
     }
 }

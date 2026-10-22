@@ -58,7 +58,10 @@ final class GroupReactionTests: XCTestCase {
                      GroupPeer(id: carol, callsign: "carol", status: .busy),
                      GroupPeer(id: dave, callsign: "dave", status: .idle)]
         service.peers = { peers }
-        service.deliver = { [self] id, text in typed.append((id, text)); return true }
+        service.deliver = { [self] id, text in
+            guard id != carol else { return false }   // carol's claude refuses typed text, so her wake is held
+            typed.append((id, text)); return true
+        }
         bridge.groups = service
         group = try service.store.create(name: "Checkout fix", members: [alice, bob, carol]).get()
     }
@@ -86,15 +89,15 @@ final class GroupReactionTests: XCTestCase {
         let seq = try aliceSays()
         let spent = service.store.group(group.id)?.spent
         let cursorBefore = service.store.cursor(carol, group: group.id)
-        let pendingBefore = service.hasPending(carol)   // alice's message is already held for busy carol
+        let pendingBefore = service.hasPending(carol)   // alice's message is already held for carol, whose delivery failed
         let r = try call("group_react", ["group": "Checkout fix", "message": seq, "emoji": "👍"])
         XCTAssertTrue(r.ok, r.text)
         XCTAssertEqual(r.text, "reacted 👍 to #\(seq); nobody was woken")
-        XCTAssertTrue(typed.isEmpty, "a reaction wakes nobody, not even the author or the busy member")
+        XCTAssertTrue(typed.isEmpty, "a reaction wakes nobody, not even the author or carol")
         XCTAssertEqual(service.store.group(group.id)?.spent, spent, "and costs no budget")
         XCTAssertEqual(service.store.cursor(carol, group: group.id), cursorBefore)
-        XCTAssertEqual(service.hasPending(carol), pendingBefore, "no wake is held for the busy member either")
-        XCTAssertTrue(pendingBefore, "(the fixture's busy member does hold alice's wake, so the check can fail)")
+        XCTAssertEqual(service.hasPending(carol), pendingBefore, "no wake is held for carol either")
+        XCTAssertTrue(pendingBefore, "(the fixture's refusing member does hold alice's wake, so the check can fail)")
         let logged = try XCTUnwrap(service.store.messages(group.id).last)
         XCTAssertEqual(logged.author, .member(bob))
         XCTAssertEqual(logged.reaction, "👍")

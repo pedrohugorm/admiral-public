@@ -25,10 +25,42 @@ enum DemoData {
             title: convo.title
         )
         session.gitBranch = "cloud/scheduled-ordering"
+        // A Claude session id + transcript on disk so the tab opens in Chat with the sample
+        // conversation (the README main-window shot). Written under the (isolated) support dir.
+        let sid = "demo-scheduled-ordering"
+        let transcript = manager.supportDir.appendingPathComponent("demo-\(sid).jsonl")
+        try? (stamped(lines + chatLines).joined(separator: "\n") + "\n")
+            .write(to: transcript, atomically: true, encoding: .utf8)
+        session.claudeSessionID = sid
+        session.transcriptPath = transcript.path
+        ChatLedger.setMode(.chat, base: manager.supportDir, session: sid)
         manager.register(session, handle: nil)
         manager.setConversation(session.id, convo)
         manager.selectedID = session.id
     }
+
+    /// Adds the timestamp/uuid/sessionId a real transcript line carries (Chat history needs them).
+    private static func stamped(_ raw: [String]) -> [String] {
+        let start = Date().addingTimeInterval(-Double(raw.count) * 40)
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return raw.enumerated().map { i, line in
+            guard var obj = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
+                  obj["type"] as? String != "ai-title" else { return line }
+            obj["timestamp"] = fmt.string(from: start.addingTimeInterval(Double(i) * 40))
+            obj["uuid"] = UUID().uuidString.lowercased()
+            obj["sessionId"] = "demo-scheduled-ordering"
+            guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys, .withoutEscapingSlashes]) else { return line }
+            return String(decoding: data, as: UTF8.self)
+        }
+    }
+
+    /// The rest of the sample conversation, shown in Chat.
+    static let chatLines: [String] = [
+        #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Schema and checkout are done:\n\n- `orders.scheduled_for` (nullable `timestamptz`) with a migration and an index\n- Checkout shows a **Deliver later** picker limited to store hours\n\nNow wiring the delivery queue worker so scheduled orders are released 20 minutes before their slot."}]}}"#,
+        #"{"type":"user","message":{"role":"user","content":"Make sure orders scheduled outside store hours are rejected server-side too."}}"#,
+        #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Good call. I'll add `validateScheduledWindow` to `OrderService.create` so it returns `422` with a clear message, plus tests for before-open, after-close and holiday slots."}]}}"#,
+    ]
 
     static let lines: [String] = [
         #"{"type":"ai-title","aiTitle":"Implement scheduled ordering"}"#,

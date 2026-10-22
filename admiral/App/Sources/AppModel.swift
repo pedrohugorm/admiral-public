@@ -308,8 +308,8 @@ final class AppModel: ObservableObject {
     }
 
     /// The API server binds its port IMMEDIATELY and never waits for the Keychain. The operator
-    /// token is resolved in the background (`recheckOperatorToken`); until it arrives the guarded
-    /// routes (`/mcp`, session events) answer `503 token unavailable`, and when it arrives it is
+    /// token is resolved in the background (`recheckOperatorToken`); until it arrives every route
+    /// (`/v1/messages`, `/mcp`, session events) answers `503 token unavailable`, and when it arrives it is
     /// swapped into `operatorTokenProvider` with no server restart (so no port churn).
     private func startAPIServer() {
         guard config.features.apiServer else { return }
@@ -326,7 +326,7 @@ final class AppModel: ObservableObject {
         guard apiServer == nil else { return }
         let mcpEndpoint = OperatorMCPEndpoint(mcp: mcp, tokenProvider: operatorTokenProvider)
         let server = AnthropicHTTPServer(
-            endpoint: AnthropicEndpoint(backend: sessions),
+            endpoint: AnthropicEndpoint(backend: sessions, tokenProvider: operatorTokenProvider),
             mcpEndpoint: mcpEndpoint,
             eventsEndpoint: SessionEventsEndpoint(source: sessions, tokenProvider: operatorTokenProvider)
         )
@@ -1486,12 +1486,14 @@ final class AppModel: ObservableObject {
     func openChatFile(_ url: URL) {
         let line = url.fragment.flatMap { $0.hasPrefix("L") ? Int($0.dropFirst()) : nil }
         let file = URL(fileURLWithPath: url.path)
+        let link = TerminalLink.forFile(file)
+        guard case .file = link else { return link.perform() }   // runnable → Finder, never run
         if let line, let editor = URL(string: "vscode://file\(file.path):\(line)"),
            NSWorkspace.shared.urlForApplication(toOpen: editor) != nil {
             NSWorkspace.shared.open(editor)
             return
         }
-        NSWorkspace.shared.open(file)
+        link.perform()
     }
 
     /// A permission prompt answered from the chat: Enter takes claude's pre-selected "Yes".

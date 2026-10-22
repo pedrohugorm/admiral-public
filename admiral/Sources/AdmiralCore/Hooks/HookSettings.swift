@@ -58,7 +58,7 @@ public enum HookSettings {
 
     /// Single-quoted so a bundle path with spaces is safe.
     static func command(helper: String, event: String) -> String {
-        "'\(helper)' claude \(event)"
+        "\(ShellQuote.single(helper)) claude \(event)"
     }
 
     /// Writes the hooks-only settings to `url`. Returns true only if the file was actually
@@ -75,10 +75,9 @@ public enum HookSettings {
         ) else { return false }
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        do { try data.write(to: url, options: .atomic) } catch { return false }
         // The file can hold a provider's API token, so it is the session's to read and
-        // nobody else's. Set after the write: an atomic write replaces the inode.
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        // nobody else's — 0600 from its first byte, never world-readable in between.
+        do { try PrivateFile.write(data, to: url) } catch { return false }
         return true
     }
 }

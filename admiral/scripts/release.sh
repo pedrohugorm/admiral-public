@@ -18,7 +18,7 @@
 #
 # Usage:
 #   scripts/release.sh            # build + install as the last released version (newest vX.Y.Z tag)
-#   scripts/release.sh 1.1        # stamp MARKETING_VERSION = 1.1 instead
+#   scripts/release.sh 1.1.0      # stamp MARKETING_VERSION = 1.1.0 instead (MAJOR.MINOR.PATCH only)
 #   (the build number is always stamped: CURRENT_PROJECT_VERSION = git commit count)
 #   Published releases are made by scripts/release-local.sh (see docs/releasing.md).
 #
@@ -38,6 +38,11 @@ PRODUCT="$DERIVED/Build/Products/Release/$APP_NAME.app"
 DEST="${ADMIRAL_INSTALL_DEST:-/Applications/$APP_NAME.app}"
 REAL_DEST="/Applications/$APP_NAME.app"
 VERSION="${1:-$(git describe --tags --match 'v[0-9]*.[0-9]*.[0-9]*' --abbrev=0 2>/dev/null | sed 's/^v//' || true)}"
+# The version is stamped into Info.plist and named in paths: only MAJOR.MINOR.PATCH digits.
+if [ -n "$VERSION" ] && ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "✗ version '$VERSION' is not MAJOR.MINOR.PATCH (e.g. 1.4.0)" >&2
+  exit 2
+fi
 
 step() { printf '\n\033[1;36m▶ %s\033[0m\n' "$1"; }
 
@@ -57,12 +62,10 @@ step "Building Release"
 BUILD_NUMBER="$(git rev-list --count HEAD)"
 BUILD_SETTINGS=(CODE_SIGNING_ALLOWED=NO "CURRENT_PROJECT_VERSION=$BUILD_NUMBER")
 [ -n "$VERSION" ] && BUILD_SETTINGS+=("MARKETING_VERSION=$VERSION")
-# CI has nobody to click Xcode's one-time "trust this package plugin/macro" prompt (SwiftTerm
-# ships a build plugin), so it skips that validation; on a Mac the prompt was answered once.
-XCODEBUILD_FLAGS=()
-[ -n "${CI:-}" ] && XCODEBUILD_FLAGS=(-skipPackagePluginValidation -skipMacroValidation)
+# Package plugin and macro validation stay on everywhere: a release build never runs package
+# code nobody has trusted (an environment variable such as CI must not be able to turn it off).
 xcodebuild -project "$PROJ" -scheme "$SCHEME" -configuration Release \
-  -derivedDataPath "$DERIVED" ${XCODEBUILD_FLAGS[@]+"${XCODEBUILD_FLAGS[@]}"} build "${BUILD_SETTINGS[@]}"
+  -derivedDataPath "$DERIVED" build "${BUILD_SETTINGS[@]}"
 
 # 3. Sign the whole bundle (helpers included) with the stable local identity.
 step "Signing"

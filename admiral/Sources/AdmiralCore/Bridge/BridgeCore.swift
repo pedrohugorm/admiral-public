@@ -158,6 +158,49 @@ public final class BridgeCore {
         return deliverOverSocket(prompt.text, to: target, from: sender)
     }
 
+    /// Why a peer cannot take a typed message. A hail or broadcast is typed into the target's
+    /// PTY, so it is only safe where claude's prompt is what reads it: in a bash tab, or a tab
+    /// whose claude exited, the text lands in a shell; behind an open dialog, it answers the
+    /// dialog. Decided here once for `hail` and `broadcast`; the operator's `inject` is not
+    /// gated (only sanitized).
+    enum PeerBlock: Equatable {
+        case notClaude, claudeExited, dialogOpen
+
+        /// What `hail` says after "not delivered: @x".
+        var reason: String {
+            switch self {
+            case .notClaude:
+                return "is not a claude session — typed text would go to its shell; nothing was typed"
+            case .claudeExited:
+                return "has no claude running (it is back at its shell) — nothing was typed"
+            case .dialogOpen:
+                return "is waiting on a dialog (a permission prompt or a question) — nothing was "
+                    + "typed; try again once it is answered"
+            }
+        }
+
+        /// What `broadcast` says in parentheses after a skipped station.
+        var short: String {
+            switch self {
+            case .notClaude: return "not a claude session"
+            case .claudeExited: return "claude exited"
+            case .dialogOpen: return "waiting on a dialog"
+            }
+        }
+    }
+
+    /// Nil when `target` can take a typed message. `.unknown` is not refused: it is also a
+    /// fresh tab, and claude's "waiting" is read live from its session file instead.
+    func peerBlock(_ target: AgentSession) -> PeerBlock? {
+        guard target.agentType.isManaged else { return .notClaude }
+        if target.status == .shell { return .claudeExited }
+        if let sid = target.claudeSessionID,
+           ClaudeSessionFile.newest(sessionId: sid, claudeHome: manager.claudeHome)?.status == "waiting" {
+            return .dialogOpen
+        }
+        return nil
+    }
+
     /// Send `body` to a peer. Nothing is owed back unless `needsReply` says so — delivery is
     /// the whole contract for the ordinary hail, and an unanswered obligation nobody wanted
     /// is just noise in the receiver's queue.
@@ -169,6 +212,9 @@ public final class BridgeCore {
                      needsReply: Bool = false, inReplyTo: String? = nil) -> BridgeResult {
         guard let sender = manager.session(forToken: fromToken) else { return .failure("error: unknown sender") }
         guard let target = manager.session(forCallsign: to) else { return .failure("no station @\(to)") }
+        if let block = peerBlock(target) {
+            return .failure("not delivered: @\(target.displayTitle) \(block.reason)")
+        }
         if let inReplyTo { inbox.markAnswered(inReplyTo) }
         let msgID = needsReply ? idGenerator() : nil
         guard let reason = deliver(body, to: target, from: sender.displayTitle, replyTo: msgID) else {
@@ -181,16 +227,22 @@ public final class BridgeCore {
 
     public func broadcast(fromToken: String, body: String) -> BridgeResult {
         guard let sender = manager.session(forToken: fromToken) else { return .failure("error: unknown sender") }
-        let peers = manager.peers(excludingToken: fromToken)
+        var peers: [AgentSession] = [], skipped: [String] = []
+        for peer in manager.peers(excludingToken: fromToken) {
+            if let block = peerBlock(peer) { skipped.append("@\(peer.displayTitle) (\(block.short))") }
+            else { peers.append(peer) }
+        }
+        let skipNote = skipped.isEmpty ? ""
+            : "; skipped \(skipped.count) that cannot take a typed message: " + skipped.joined(separator: ", ")
         let unreached = peers.filter { deliver(body, to: $0, from: sender.displayTitle) != nil }
         guard unreached.isEmpty else {
             // Naming them matters: "broadcast to 5" while two heard nothing is the failure
             // this whole change was meant to stop being invisible.
             let names = unreached.map { "@\($0.displayTitle)" }.joined(separator: ", ")
             return .success("broadcast to \(peers.count - unreached.count) of "
-                + "\(peers.count) station(s) — could not reach \(names)")
+                + "\(peers.count) station(s) — could not reach \(names)" + skipNote)
         }
-        return .success("broadcast to \(peers.count) station(s)")
+        return .success("broadcast to \(peers.count) station(s)" + skipNote)
     }
 
     /// Rename a station: the caller's own by default, or a peer named by `to`.
@@ -221,7 +273,9 @@ public final class BridgeCore {
     /// Inject raw text into a session's terminal by name — NO sender identity required.
     /// Used by the agent-chat relay (a service, not a registered session) to deliver an
     /// inbound chat message verbatim. Unlike `hail`, there is no framing and no inbox
-    /// enrollment: the caller supplies the exact text and owns its own attribution.
+    /// enrollment: the caller supplies the exact text and owns its own attribution. Not gated
+    /// by `peerBlock` (the operator may type into any tab), but `TerminalPrompt.injected`
+    /// sanitizes it like every other typed message.
     public func inject(to: String, text: String) -> BridgeResult {
         guard let target = manager.session(forCallsign: to) else { return .failure("no station @\(to)") }
         manager.inject(target.id, text: text)

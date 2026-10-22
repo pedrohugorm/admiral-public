@@ -59,6 +59,12 @@ echo "signing identity: $IDENTITY" >&2
 # The runtime itself needs no entitlements (PTYs/shells, no JIT, no Apple events, no dlopen of
 # third-party code); the only one Admiral may claim is the keychain group below.
 # ADMIRAL_NO_TIMESTAMP=1 signs offline (--timestamp=none).
+#
+# Self-signed and ad-hoc builds stay WITHOUT the hardened runtime, on purpose: its library
+# validation only loads libraries signed by the same Team ID (or Apple), and these signatures
+# have no Team ID. A Debug build loads Contents/MacOS/Admiral.debug.dylib (and __preview.dylib)
+# through @rpath, so with `--options runtime` it would be refused at launch. Revisit only if
+# no build this script signs embeds a dylib or framework.
 OPTS=(--timestamp=none)
 case "$IDENTITY" in
   "Developer ID Application:"*)

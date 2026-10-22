@@ -39,6 +39,13 @@ public struct ClaudeSessionFile: Decodable, Sendable {
         return try? JSONDecoder().decode(ClaudeSessionFile.self, from: data)
     }
 
+    /// The freshest file (by `updatedAt`) for a session id: a resumed or relaunched claude
+    /// leaves the old pid's file behind, and its status is stale.
+    public static func newest(sessionId: String, claudeHome: URL) -> ClaudeSessionFile? {
+        all(claudeHome: claudeHome).filter { $0.sessionId == sessionId }
+            .max { ($0.updatedAt ?? 0) < ($1.updatedAt ?? 0) }
+    }
+
     /// Decode every `sessions/<pid>.json` under claudeHome (ignoring unreadable ones), so a
     /// session can be matched by its stable `sessionId` rather than a pid that needs a fragile
     /// process-tree walk and doesn't survive resume.

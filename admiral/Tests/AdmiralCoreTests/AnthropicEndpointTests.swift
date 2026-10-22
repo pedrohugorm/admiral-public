@@ -70,9 +70,13 @@ final class AnthropicEndpointTests: XCTestCase {
         pollInterval: 0.01, pingInterval: 10,
         injectReadyTimeout: 0.05, injectVerifyTimeout: 0.02, injectMaxAttempts: 3)
 
+    /// The operator token every request sends unless a test says otherwise.
+    static let apiToken = "adm_endpoint_test"
+    private let tokens = OperatorTokenProvider(AnthropicEndpointTests.apiToken)
+
     override func setUp() async throws {
         backend = FakeAnthropicBackend()
-        endpoint = AnthropicEndpoint(backend: backend, config: Self.cfg)
+        endpoint = AnthropicEndpoint(backend: backend, tokenProvider: tokens, config: Self.cfg)
         tabID = UUID()
         backend.tabs["Worker"] = AnthropicTab(id: tabID, name: "Worker", isManaged: true)
         transcript = FileManager.default.temporaryDirectory
@@ -86,10 +90,11 @@ final class AnthropicEndpointTests: XCTestCase {
     /// `tab` becomes the ADMIRAL_TAB_NAME header (nil omits it). Headers arrive from
     /// `HTTPWire.parse` with lowercased keys, so that's what the fake sends.
     private func post(_ body: String, path: String = "/v1/messages", method: String = "POST",
-                       tab: String? = "Worker",
+                       tab: String? = "Worker", apiKey: String? = AnthropicEndpointTests.apiToken,
                        headers: [String: String] = [:]) async -> (status: Int, json: [String: Any]) {
         var headers = headers
         if let tab { headers["admiral_tab_name"] = tab }
+        if let apiKey { headers["x-api-key"] = apiKey }
         let request = HTTPRequest(method: method, path: path, headers: headers, body: Data(body.utf8))
         var collected = Data()
         await endpoint.handle(request) { collected.append($0) }
@@ -185,6 +190,7 @@ final class AnthropicEndpointTests: XCTestCase {
         }
         let body = requestBody(["q"])
         let raw = "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:4141\r\nADMIRAL_TAB_NAME: Worker\r\n"
+            + "X-Api-Key: \(Self.apiToken)\r\n"
             + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)"
         let request = HTTPWire.parse(Data(raw.utf8))
         XCTAssertNotNil(request)
@@ -194,6 +200,42 @@ final class AnthropicEndpointTests: XCTestCase {
         XCTAssertTrue(text.hasPrefix("HTTP/1.1 200 OK"), text.prefix(40).description)
         XCTAssertEqual(backend.injected.count, 1)
     }
+    // MARK: operator token
+
+    /// Every request types into a tab: without the operator token nothing is injected.
+    func testMissingOrWrongTokenIs401AndNothingIsTyped() async {
+        for key in [nil, "", "adm_wrong", Self.apiToken + "x"] as [String?] {
+            let r = await post(requestBody(["q"]), apiKey: key)
+            XCTAssertEqual(r.status, 401, key ?? "nil")
+            XCTAssertEqual(errorType(r.json), "authentication_error")
+            let bySID = await post(requestBody(["q"]), tab: nil, apiKey: key, headers: [
+                "admiral_session_id": UUID().uuidString,
+                "admiral_cwd": FileManager.default.temporaryDirectory.path])
+            XCTAssertEqual(bySID.status, 401, key ?? "nil")
+        }
+        XCTAssertTrue(backend.injected.isEmpty)
+        XCTAssertTrue(backend.created.isEmpty, "no scratch tab is made for an unauthenticated caller")
+    }
+
+    /// The Bearer form works as well as x-api-key (the SDKs send one or the other).
+    func testBearerTokenIsAccepted() async {
+        echoUserOnInject()
+        backend.onPoll = { [self] n in
+            if n == 2 { appendTranscript(assistantLine("ok", usage: (1, 1))) }
+        }
+        let r = await post(requestBody(["q"]), apiKey: nil,
+                           headers: ["authorization": "Bearer \(Self.apiToken)"])
+        XCTAssertEqual(r.status, 200)
+    }
+
+    /// Before the Keychain has supplied the token, every request is 503 — never open.
+    func testNoTokenYetIs503() async {
+        tokens.token = ""
+        let r = await post(requestBody(["q"]))
+        XCTAssertEqual(r.status, 503)
+        XCTAssertTrue(backend.injected.isEmpty)
+    }
+
     // MARK: origin / host guard
 
     func testOriginHeaderIsRefused403() async {
@@ -303,7 +345,7 @@ final class AnthropicEndpointTests: XCTestCase {
         // gets a wide one; the busy→idle edge at poll 6 still ends it at once.
         var cfg = Self.cfg
         cfg.turnTimeout = 5
-        endpoint = AnthropicEndpoint(backend: backend, config: cfg)
+        endpoint = AnthropicEndpoint(backend: backend, tokenProvider: tokens, config: cfg)
         backend.statuses = [.idle, .busy, .busy, .busy, .busy, .idle]
         backend.onPoll = { [self] n in
             if n == 3 { appendTranscript(assistantLine("first", usage: (1, 1))) }

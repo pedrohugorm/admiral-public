@@ -155,7 +155,8 @@ final class GroupAnswerLogTests: XCTestCase {
         XCTAssertFalse(service.hasPending(web))
         XCTAssertFalse(service.hasPending(qa))
         let message = try XCTUnwrap(r.message)
-        XCTAssertEqual(GroupPrompt.line(message, names: [api: "api-fix"]), "User (to @api-fix): My answers:\n- Which? → SQLite")
+        XCTAssertEqual(GroupPrompt.line(message, names: [api: "api-fix"]), "User (to @api-fix): My answers:\n  - Which? → SQLite",
+                       "continuation lines are indented under the message's own line")
     }
 
     func testTheAnsweredMemberIsNotHandedItAgainButTheOthersStillReadIt() throws {

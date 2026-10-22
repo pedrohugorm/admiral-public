@@ -57,10 +57,7 @@ final class SwiftTermHost: TerminalHost {
         /// against `cwd` into a real file URL first. A link picked out of rendered prose
         /// carries the sentence's full stop (`…/review.md.`), so that is forgiven too.
         func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
-            switch TerminalLink.resolveInProse(link, cwd: cwd) {
-            case .web(let url), .file(let url): NSWorkspace.shared.open(url)
-            case .none: NSSound.beep()
-            }
+            TerminalLink.resolveInProse(link, cwd: cwd).perform()
         }
 
         // MARK: TerminalViewDelegate proxies — the view is the original delegate and these
@@ -299,5 +296,18 @@ final class SwiftTermHost: TerminalHost {
     /// The live terminal view for a handle (for SwiftUI embedding).
     func view(for handle: TerminalHandle?) -> LocalProcessTerminalView? {
         (handle as? Handle)?.view
+    }
+}
+
+extension TerminalLink {
+    /// The one place a clicked link (terminal or chat) reaches the system: a web link or an
+    /// inert file opens, a runnable file is only revealed in Finder, anything else beeps.
+    /// Not actor-bound: SwiftTerm calls `requestOpenLink` from a nonisolated delegate method.
+    func perform() {
+        switch self {
+        case .web(let url), .file(let url): NSWorkspace.shared.open(url)
+        case .reveal(let url): NSWorkspace.shared.activateFileViewerSelecting([url])
+        case .none: NSSound.beep()
+        }
     }
 }

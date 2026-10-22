@@ -506,6 +506,20 @@ final class SchedulerServiceTests: XCTestCase {
         XCTAssertNil(backend.opened.first?.effort, "no effort named means claude's own default")
     }
 
+    /// schedules/<id>.json can be edited after `set` checked it. A model or effort outside its
+    /// closed set fails the run before any tab opens, so it never reaches claude's command line.
+    func testAModelOrEffortEditedIntoTheFileFailsTheRunWithoutOpeningATab() throws {
+        for (model, effort) in [("opus --verbose", nil), ("haiku", "high; echo hi")] as [(String, String?)] {
+            let s = Schedule(name: "edited", cron: "0 9 * * *", cwd: base.path, prompt: "go",
+                             model: model, effort: effort, lastFire: date(2026, 10, 2, 8, 59))
+            store.save(s)
+            let run = try service().runNow(name: "edited").get()
+            XCTAssertEqual(run.status, .failed, model)
+            XCTAssertEqual(backend.opened.count, 0, "no tab opens for \(model) / \(effort ?? "-")")
+            store.delete(s.id)
+        }
+    }
+
     func testAModelAndEffortAreNormalizedToTheCLISpelling() throws {
         var naming = spec("report")
         naming.model = "Fable"

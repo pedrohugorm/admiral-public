@@ -94,14 +94,14 @@ final class SessionLifecycleTests: XCTestCase {
         defer { try? fm.removeItem(at: home) }
 
         // Two files for one sessionId (two app instances resumed it); the fresher one wins.
-        try #"{"pid":111,"sessionId":"abc-123","status":"idle","updatedAt":100}"#
+        try #"{"pid":111,"sessionId":"00000000-0000-4000-8000-000000000abc","status":"idle","updatedAt":100}"#
             .write(to: sessionsDir.appendingPathComponent("111.json"), atomically: true, encoding: .utf8)
-        try #"{"pid":222,"sessionId":"abc-123","status":"busy","updatedAt":200}"#
+        try #"{"pid":222,"sessionId":"00000000-0000-4000-8000-000000000abc","status":"busy","updatedAt":200}"#
             .write(to: sessionsDir.appendingPathComponent("222.json"), atomically: true, encoding: .utf8)
 
         let manager = SessionManager(
             host: FakeTerminalHost(), claudeHome: home, executablePath: "/bin/echo")
-        manager.register(AgentSession(callsign: "a", cwd: "/a", claudeSessionID: "abc-123", status: .unknown))
+        manager.register(AgentSession(callsign: "a", cwd: "/a", claudeSessionID: "00000000-0000-4000-8000-000000000abc", status: .unknown))
         manager.register(AgentSession(callsign: "b", cwd: "/b", claudeSessionID: "no-file", status: .unknown))
 
         manager.refreshStatuses()
@@ -238,10 +238,10 @@ final class SessionLifecycleTests: XCTestCase {
             appearanceStore: SessionAppearanceStore(defaults: tempDefaults()),
             openSessionsStore: OpenSessionsStore(defaults: tempDefaults())
         )
-        let s = manager.commission(callsign: "ai", cwd: "/x", agentType: claude, sessionID: "abc-123", resume: true)
-        XCTAssertEqual(s.claudeSessionID, "abc-123", "resumed session reuses the saved id")
+        let s = manager.commission(callsign: "ai", cwd: "/x", agentType: claude, sessionID: "00000000-0000-4000-8000-000000000abc", resume: true)
+        XCTAssertEqual(s.claudeSessionID, "00000000-0000-4000-8000-000000000abc", "resumed session reuses the saved id")
         let cmd = host.spawned.first?.args.joined(separator: " ") ?? ""
-        XCTAssertTrue(cmd.contains("--resume abc-123"), "must resume via --resume; got: \(cmd)")
+        XCTAssertTrue(cmd.contains("--resume 00000000-0000-4000-8000-000000000abc"), "must resume via --resume; got: \(cmd)")
         XCTAssertFalse(cmd.contains("--session-id"), "must not also pass --session-id")
     }
 
@@ -259,7 +259,7 @@ final class SessionLifecycleTests: XCTestCase {
             appearanceStore: SessionAppearanceStore(defaults: tempDefaults()),
             openSessionsStore: OpenSessionsStore(defaults: tempDefaults())
         )
-        _ = manager.commission(callsign: "worker", cwd: "/x", agentType: claude, sessionID: "abc-123")
+        _ = manager.commission(callsign: "worker", cwd: "/x", agentType: claude, sessionID: "00000000-0000-4000-8000-000000000abc")
         let cmd = host.spawned.first?.args.joined(separator: " ") ?? ""
         XCTAssertTrue(cmd.contains("--name 'worker'"), "spawns with the tab name via --name; got: \(cmd)")
         XCTAssertFalse(cmd.contains(SessionManager.sessionNamePlaceholder), "the placeholder is fully substituted")
@@ -278,7 +278,7 @@ final class SessionLifecycleTests: XCTestCase {
             appearanceStore: SessionAppearanceStore(defaults: tempDefaults()),
             openSessionsStore: OpenSessionsStore(defaults: tempDefaults())
         )
-        let s = manager.commission(callsign: "worker", cwd: "/x", agentType: claude, sessionID: "abc-123")
+        let s = manager.commission(callsign: "worker", cwd: "/x", agentType: claude, sessionID: "00000000-0000-4000-8000-000000000abc")
         manager.rename(s.id, to: "Sam's tab")
         // Rename doesn't relaunch; a reload (or restore) is what re-spawns with the new name.
         manager.reload(s.id)
@@ -368,10 +368,10 @@ final class SessionLifecycleTests: XCTestCase {
             openSessionsStore: OpenSessionsStore(defaults: tempDefaults())
         )
         // An empty session (no transcript) reopens fresh at the SAME id via --session-id.
-        let s = manager.commission(callsign: "ai", cwd: "/x", agentType: claude, sessionID: "def-456", resume: false)
-        XCTAssertEqual(s.claudeSessionID, "def-456")
+        let s = manager.commission(callsign: "ai", cwd: "/x", agentType: claude, sessionID: "00000000-0000-4000-8000-000000000def", resume: false)
+        XCTAssertEqual(s.claudeSessionID, "00000000-0000-4000-8000-000000000def")
         let cmd = host.spawned.first?.args.joined(separator: " ") ?? ""
-        XCTAssertTrue(cmd.contains("--session-id def-456"), "must recreate via --session-id; got: \(cmd)")
+        XCTAssertTrue(cmd.contains("--session-id 00000000-0000-4000-8000-000000000def"), "must recreate via --session-id; got: \(cmd)")
         XCTAssertFalse(cmd.contains("--resume"), "must not resume a non-existent session")
     }
 }

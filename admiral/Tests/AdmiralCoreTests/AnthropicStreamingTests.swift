@@ -10,7 +10,7 @@ final class AnthropicStreamingTests: XCTestCase {
 
     override func setUp() async throws {
         backend = FakeAnthropicBackend()
-        endpoint = AnthropicEndpoint(backend: backend, config: .init(
+        endpoint = AnthropicEndpoint(backend: backend, tokenProvider: OperatorTokenProvider("adm_sse"), config: .init(
             busyWaitTimeout: 0.05, busySeenTimeout: 0.03, turnTimeout: 0.2,
             pollInterval: 0.01, pingInterval: 10,
             injectReadyTimeout: 0.05, injectVerifyTimeout: 0.02, injectMaxAttempts: 3))
@@ -42,7 +42,7 @@ final class AnthropicStreamingTests: XCTestCase {
     /// Run a streaming request against `tab`, return the emitted chunks as strings.
     private func stream(_ body: String, tab: String = "Worker") async -> [String] {
         let request = HTTPRequest(method: "POST", path: "/v1/messages",
-                                  headers: ["admiral_tab_name": tab], body: Data(body.utf8))
+                                  headers: ["admiral_tab_name": tab, "x-api-key": "adm_sse"], body: Data(body.utf8))
         var chunks: [String] = []
         await endpoint.handle(request) { chunks.append(String(data: $0, encoding: .utf8) ?? "") }
         return chunks

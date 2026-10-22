@@ -36,11 +36,16 @@ die() { printf '\033[1;31m✗ %s\033[0m\n' "$1" >&2; exit 1; }
 step "Preflight"
 git fetch --quiet origin main --tags
 git diff --quiet && git diff --cached --quiet || die "uncommitted changes to tracked files — commit or stash first"
+# An untracked source file would be built into the release without being in the tagged commit.
+[ -z "$(git status --porcelain --untracked-files=all -- .)" ] \
+  || die "untracked files inside admiral/ — commit, remove or gitignore them first (git status -- .)"
 SHA="$(git rev-parse HEAD)"
 [ "$SHA" = "$(git rev-parse origin/main)" ] \
   || die "HEAD ($SHA) is not origin/main — push first: the release tag must point at a pushed commit"
 [ -n "$VERSION" ] || VERSION="$(scripts/next-version.sh)"
 [ -n "$VERSION" ] || { echo "nothing to release: no feat/fix/perf commit touching admiral/ since the last tag"; exit 0; }
+# Checked before its first use: it becomes the tag, a temp path, the DMG name and Info.plist.
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version '$VERSION' is not MAJOR.MINOR.PATCH (e.g. 1.4.0)"
 TAG="v$VERSION"
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && die "tag $TAG already exists"
 BUILD="$(git rev-list --count HEAD)"

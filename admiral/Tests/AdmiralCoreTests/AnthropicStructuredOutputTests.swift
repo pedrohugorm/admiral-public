@@ -76,7 +76,7 @@ final class AnthropicEndpointStructuredOutputTests: XCTestCase {
 
     override func setUp() async throws {
         backend = FakeAnthropicBackend()
-        endpoint = AnthropicEndpoint(backend: backend, config: Self.cfg)
+        endpoint = AnthropicEndpoint(backend: backend, tokenProvider: OperatorTokenProvider("adm_so"), config: Self.cfg)
         tabID = UUID()
         backend.tabs["Worker"] = AnthropicTab(id: tabID, name: "Worker", isManaged: true)
         transcript = FileManager.default.temporaryDirectory
@@ -87,7 +87,7 @@ final class AnthropicEndpointStructuredOutputTests: XCTestCase {
 
     private func post(_ body: String, stream: Bool = false) async -> (status: Int, raw: String) {
         let request = HTTPRequest(method: "POST", path: "/v1/messages",
-                                  headers: ["admiral_tab_name": "Worker"], body: Data(body.utf8))
+                                  headers: ["admiral_tab_name": "Worker", "x-api-key": "adm_so"], body: Data(body.utf8))
         var collected = Data()
         await endpoint.handle(request) { collected.append($0) }
         let text = String(data: collected, encoding: .utf8)!
@@ -157,7 +157,7 @@ final class AnthropicEndpointStructuredOutputTests: XCTestCase {
         // against a 0.05s grace measured 0.29s there).
         var cfg = Self.cfg
         cfg.turnTimeout = 5
-        endpoint = AnthropicEndpoint(backend: backend, config: cfg)
+        endpoint = AnthropicEndpoint(backend: backend, tokenProvider: OperatorTokenProvider("adm_so"), config: cfg)
         backend.statuses = [.idle]
         let started = Date()
         let r = await post(soBody)

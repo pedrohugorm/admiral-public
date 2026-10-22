@@ -5,9 +5,11 @@ import AdmiralCore
 
 /// Serves the Anthropic-compatible chat API **and** operator MCP over the same
 /// loopback TCP port (default 4141). Paths:
-/// - `POST /v1/messages` → Anthropic chat (unchanged)
-/// - `POST /mcp` → operator MCP (bearer token required)
-/// - `GET /sessions/<callsign>/events` → live SSE feed of one session (same token)
+/// - `POST /v1/messages` → Anthropic chat
+/// - `POST /mcp` → operator MCP
+/// - `GET /sessions/<callsign>/events` → live SSE feed of one session
+/// Every route requires the operator token and refuses browser-originated requests (the
+/// endpoints check both).
 ///
 /// Mirrors `BridgeSocketServer`: POSIX listener, per-connection blocking reads on a
 /// background queue, endpoint work on the main actor.
@@ -23,6 +25,8 @@ final class AnthropicHTTPServer {
     /// thread parked in a blocking `accept()` would keep the socket, and the port, alive.
     private var acceptSource: DispatchSourceRead?
     private let queue = DispatchQueue(label: "admiral.anthropic.http", qos: .utility, attributes: .concurrent)
+    /// At most 32 connections in flight (a long SSE stream holds one).
+    private nonisolated let limiter = ConnectionLimiter(limit: 32)
 
     init(endpoint: AnthropicEndpoint, mcpEndpoint: OperatorMCPEndpoint? = nil,
          eventsEndpoint: SessionEventsEndpoint? = nil) {
@@ -97,7 +101,10 @@ final class AnthropicHTTPServer {
                 // SDK/httpx client sends head then body separately) reads as EAGAIN(-1),
                 // which the loop treats as EOF and closes the socket with no response.
                 _ = fcntl(conn, F_SETFL, fcntl(conn, F_GETFL, 0) & ~O_NONBLOCK)
-                self?.queue.async { self?.handleConnection(conn) }
+                // Past the cap a connection is closed unanswered; each admitted one gives its
+                // slot back when it closes (handleConnection).
+                guard let self, self.limiter.acquire() else { close(conn); continue }
+                self.queue.async { self.handleConnection(conn) }
             }
         }
         source.setCancelHandler { [weak self] in
@@ -126,18 +133,17 @@ final class AnthropicHTTPServer {
 
     /// Read until a full HTTP request has arrived, then route: `/mcp` → operator MCP,
     /// everything else → Anthropic chat endpoint.
+    ///
+    /// The read (and every later write) is bounded by `HTTPWire.ioTimeout`. The writes run on
+    /// the main actor, so a client that stops reading can block it for up to that long per
+    /// write — the bound, not zero, is what this buys for a long SSE stream.
     private nonisolated func handleConnection(_ conn: Int32) {
-        var buffer = Data()
-        var chunk = [UInt8](repeating: 0, count: 65536)
-        var request: HTTPRequest?
-        while buffer.count < 10 << 20 {  // 10 MB request cap
-            let n = read(conn, &chunk, chunk.count)
-            if n <= 0 { break }
-            buffer.append(contentsOf: chunk[0..<n])
-            if let parsed = HTTPWire.parse(buffer) { request = parsed; break }
+        let limiter = self.limiter
+        guard let request = HTTPWire.readRequest(from: conn) else {
+            close(conn); limiter.release(); return
         }
-        guard let request else { close(conn); return }
         Task { @MainActor [endpoint, mcpEndpoint, eventsEndpoint] in
+            defer { close(conn); limiter.release() }
             if let mcpEndpoint, OperatorMCPEndpoint.isMCPPath(request.path) {
                 Self.writeAll(conn, mcpEndpoint.handle(request))
             } else if let eventsEndpoint, SessionEventsEndpoint.callsign(inPath: request.path) != nil {
@@ -148,7 +154,6 @@ final class AnthropicHTTPServer {
                     Self.writeAll(conn, data)
                 }
             }
-            close(conn)
         }
     }
 

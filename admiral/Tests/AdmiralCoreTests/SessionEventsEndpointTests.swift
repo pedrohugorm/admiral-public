@@ -71,6 +71,22 @@ final class SessionEventsEndpointTests: XCTestCase {
         XCTAssertTrue(wrong.hasPrefix("HTTP/1.1 401"), wrong)
     }
 
+    /// A browser page (Origin) or a DNS-rebound hostname is refused even with the token.
+    func testBrowserOriginatedRequestIsRefused403() async {
+        for extra in [["origin": "https://evil.example"], ["host": "evil.example:4141"]] {
+            var req = request()
+            req = HTTPRequest(method: req.method, path: req.path,
+                              headers: req.headers.merging(extra) { a, _ in a }, body: req.body)
+            let out = await stream(FakeFeedSource([(.idle, [])]), req) { _ in true }
+            XCTAssertTrue(out.hasPrefix("HTTP/1.1 403"), out)
+            XCTAssertFalse(out.contains("text/event-stream"))
+        }
+        let loopback = HTTPRequest(method: "GET", path: "/sessions/scout/events",
+                                   headers: ["authorization": "Bearer secret", "host": "127.0.0.1:4141"], body: Data())
+        let ok = await stream(FakeFeedSource([(.idle, [])]), loopback) { _ in true }
+        XCTAssertTrue(ok.hasPrefix("HTTP/1.1 200"), ok)
+    }
+
     func testUnknownSessionAndWrongMethod() async {
         let missing = await stream(FakeFeedSource([(.idle, [])]), request("/sessions/ghost/events")) { _ in true }
         XCTAssertTrue(missing.hasPrefix("HTTP/1.1 404"), missing)

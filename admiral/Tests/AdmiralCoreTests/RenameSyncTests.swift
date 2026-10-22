@@ -57,9 +57,9 @@ final class RenameSyncTests: XCTestCase {
     func testARenameInClaudeIsCapturedOnTheNextRefresh() {
         let manager = makeManager()
         let session = manager.commission(
-            callsign: "worker", cwd: "/tmp", agentType: claudeType(), sessionID: "sess-1"
+            callsign: "worker", cwd: "/tmp", agentType: claudeType(), sessionID: "00000000-0000-4000-8000-000000000001"
         )
-        writeSessionFile(pid: 4242, sessionID: "sess-1", name: "RENAMED_IN_CLAUDE")
+        writeSessionFile(pid: 4242, sessionID: "00000000-0000-4000-8000-000000000001", name: "RENAMED_IN_CLAUDE")
 
         manager.refreshStatuses()
 
@@ -72,9 +72,9 @@ final class RenameSyncTests: XCTestCase {
     func testACapturedNameIsSanitized() {
         let manager = makeManager()
         let session = manager.commission(
-            callsign: "worker", cwd: "/tmp", agentType: claudeType(), sessionID: "sess-1"
+            callsign: "worker", cwd: "/tmp", agentType: claudeType(), sessionID: "00000000-0000-4000-8000-000000000001"
         )
-        writeSessionFile(pid: 4242, sessionID: "sess-1", name: "typed in claude")
+        writeSessionFile(pid: 4242, sessionID: "00000000-0000-4000-8000-000000000001", name: "typed in claude")
 
         manager.refreshStatuses()
 
@@ -87,9 +87,9 @@ final class RenameSyncTests: XCTestCase {
     func testCaptureIsIdempotentAcrossTicks() {
         let manager = makeManager()
         let session = manager.commission(
-            callsign: "worker", cwd: "/tmp", agentType: claudeType(), sessionID: "sess-1"
+            callsign: "worker", cwd: "/tmp", agentType: claudeType(), sessionID: "00000000-0000-4000-8000-000000000001"
         )
-        writeSessionFile(pid: 4242, sessionID: "sess-1", name: "STABLE")
+        writeSessionFile(pid: 4242, sessionID: "00000000-0000-4000-8000-000000000001", name: "STABLE")
         manager.refreshStatuses()
         manager.refreshStatuses()
         manager.refreshStatuses()
@@ -101,10 +101,10 @@ final class RenameSyncTests: XCTestCase {
     func testAnEmptyNameInTheRegistryIsIgnored() {
         let manager = makeManager()
         let session = manager.commission(
-            callsign: "worker", cwd: "/tmp", agentType: claudeType(), sessionID: "sess-1"
+            callsign: "worker", cwd: "/tmp", agentType: claudeType(), sessionID: "00000000-0000-4000-8000-000000000001"
         )
         manager.rename(session.id, to: "KEPT")
-        writeSessionFile(pid: 4242, sessionID: "sess-1", name: "")
+        writeSessionFile(pid: 4242, sessionID: "00000000-0000-4000-8000-000000000001", name: "")
 
         manager.refreshStatuses()
 
@@ -148,11 +148,11 @@ final class RenameSyncTests: XCTestCase {
     func testRenamingTheTabSendsAControlFrameToClaude() throws {
         let listener = try UDSListener()
         defer { listener.stop() }
-        writeSessionFile(pid: 4242, sessionID: "sess-1", name: "worker", socket: listener.path)
+        writeSessionFile(pid: 4242, sessionID: "00000000-0000-4000-8000-000000000001", name: "worker", socket: listener.path)
 
         let manager = makeManager()
         let session = manager.commission(
-            callsign: "worker", cwd: "/tmp", agentType: claudeType(), sessionID: "sess-1"
+            callsign: "worker", cwd: "/tmp", agentType: claudeType(), sessionID: "00000000-0000-4000-8000-000000000001"
         )
         manager.rename(session.id, to: "from the tab")
 
@@ -160,7 +160,7 @@ final class RenameSyncTests: XCTestCase {
         let control = try XCTUnwrap(frames.last)
         XCTAssertEqual(control["type"] as? String, "control")
         XCTAssertEqual(control["action"] as? String, "rename")
-        XCTAssertEqual(control["session_id"] as? String, "sess-1")
+        XCTAssertEqual(control["session_id"] as? String, "00000000-0000-4000-8000-000000000001")
         // Claude is told the sanitized name, not what was typed — otherwise the tab and
         // claude hold different strings and every later comparison sees a spurious diff.
         XCTAssertEqual(control["name"] as? String, "from-the-tab")
@@ -171,7 +171,7 @@ final class RenameSyncTests: XCTestCase {
     func testRenamingWithNoSocketIsSilent() {
         let manager = makeManager()
         let session = manager.commission(
-            callsign: "worker", cwd: "/tmp", agentType: claudeType(), sessionID: "sess-unpublished"
+            callsign: "worker", cwd: "/tmp", agentType: claudeType(), sessionID: "00000000-0000-4000-8000-0000000000ff"
         )
         manager.rename(session.id, to: "early")
         XCTAssertEqual(manager.sessions.first(where: { $0.id == session.id })?.displayTitle, "early")

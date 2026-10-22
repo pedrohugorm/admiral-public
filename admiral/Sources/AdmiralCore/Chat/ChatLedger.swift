@@ -27,7 +27,8 @@ public enum ChatLedger {
 
     static func chatDir(base: URL) -> URL {
         let dir = base.appendingPathComponent("chat", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: Int(PrivateFile.directoryMode)])
         return dir
     }
 
@@ -78,7 +79,7 @@ public enum ChatLedger {
     }
 
     public static func setMode(_ mode: Mode, base: URL, session: String) {
-        try? mode.rawValue.write(to: modeURL(base: base, session: session), atomically: true, encoding: .utf8)
+        try? PrivateFile.write(mode.rawValue, to: modeURL(base: base, session: session))
     }
 
     // MARK: - Injected-prompt markers
@@ -106,8 +107,7 @@ public enum ChatLedger {
         let source = markers.remove(at: index).source
         let encoder = JSONEncoder()
         let rest = markers.compactMap { (try? encoder.encode($0)).map { String(decoding: $0, as: UTF8.self) } }
-        try? (rest.isEmpty ? "" : rest.joined(separator: "\n") + "\n")
-            .write(to: url, atomically: true, encoding: .utf8)
+        try? PrivateFile.write(rest.isEmpty ? "" : rest.joined(separator: "\n") + "\n", to: url)
         return source
     }
 

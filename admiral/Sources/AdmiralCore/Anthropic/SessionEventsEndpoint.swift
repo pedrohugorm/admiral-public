@@ -53,6 +53,9 @@ public final class SessionEventsEndpoint {
     /// Serve one connection. `write` returns false once the client is gone, which ends the
     /// stream; so does the tab closing. Error responses are written whole and return at once.
     public func handle(_ request: HTTPRequest, write: (Data) -> Bool) async {
+        guard !request.looksBrowserOriginated else {
+            _ = write(Self.error(403, "cross-origin or non-loopback request refused")); return
+        }
         guard let callsign = Self.callsign(inPath: request.path) else {
             _ = write(Self.error(404, "not found: \(request.path)")); return
         }

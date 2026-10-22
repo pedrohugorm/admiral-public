@@ -51,7 +51,7 @@ final class TouchedReposSessionTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = TouchedReposStore(defaults: defaults)
-        let sid = "fixed-session-id"
+        let sid = "00000000-0000-4000-8000-00000000f1ed"
 
         // Run 1: commission at a fixed session id, write a log, refresh → footprint persisted.
         let m1 = SessionManager(

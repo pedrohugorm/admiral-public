@@ -16,8 +16,8 @@ public enum TranscriptFork {
         guard let text = try? String(contentsOf: source, encoding: .utf8) else { return nil }
         let dest = dir.appendingPathComponent("\(newID).jsonl")
         do {
-            try text.replacingOccurrences(of: sourceID, with: newID)
-                .write(to: dest, atomically: true, encoding: .utf8)
+            // A transcript is the whole conversation: 0600, like the ones claude writes.
+            try PrivateFile.write(text.replacingOccurrences(of: sourceID, with: newID), to: dest)
         } catch {
             return nil
         }

@@ -45,17 +45,17 @@ final class SessionAppearanceTests: XCTestCase {
     func testAppearancePersistsAndRestoresForTheSameSession() {
         let store = SessionAppearanceStore(defaults: tempDefaults())
         let manager = makeManager(store)
-        let s = manager.commission(callsign: "ai", cwd: "/Users/me/code/ai", sessionID: "sess-1")
+        let s = manager.commission(callsign: "ai", cwd: "/Users/me/code/ai", sessionID: "00000000-0000-4000-8000-000000000001")
         manager.rename(s.id, to: "My API")  // a name is an address: the space becomes a hyphen
         manager.setAppearance(s.id, colorHex: "#2BA84A", symbol: "bolt")
 
         XCTAssertEqual(manager.sessions.first?.displayTitle, "My-API")
-        XCTAssertEqual(store.appearance(forSession: "sess-1"),
+        XCTAssertEqual(store.appearance(forSession: "00000000-0000-4000-8000-000000000001"),
                        SessionAppearance(name: "My-API", colorHex: "#2BA84A", symbol: "bolt"))
 
         // Relaunch: a fresh manager restoring the SAME session id gets its look back.
         let manager2 = makeManager(store)
-        let restored = manager2.commission(callsign: "ai", cwd: "/Users/me/code/ai", sessionID: "sess-1")
+        let restored = manager2.commission(callsign: "ai", cwd: "/Users/me/code/ai", sessionID: "00000000-0000-4000-8000-000000000001")
         XCTAssertEqual(restored.customName, "My-API")
         XCTAssertEqual(restored.avatarColorHex, "#2BA84A")
         XCTAssertEqual(restored.avatarSymbol, "bolt")
@@ -84,9 +84,9 @@ final class SessionAppearanceTests: XCTestCase {
     func testNewTerminalIsFreshAndDeleteClearsOwnAppearance() {
         let store = SessionAppearanceStore(defaults: tempDefaults())
         let manager = makeManager(store)
-        let s = manager.commission(callsign: "work", cwd: "/Users/me/code/ai", sessionID: "sess-x")
+        let s = manager.commission(callsign: "work", cwd: "/Users/me/code/ai", sessionID: "00000000-0000-4000-8000-00000000000a")
         manager.rename(s.id, to: "PROJ-123")
-        XCTAssertEqual(store.appearance(forSession: "sess-x").name, "PROJ-123")
+        XCTAssertEqual(store.appearance(forSession: "00000000-0000-4000-8000-00000000000a").name, "PROJ-123")
 
         // A NEW terminal in the same folder is fresh (different id → nothing inherited).
         let fresh = manager.commission(callsign: "work", cwd: "/Users/me/code/ai")
@@ -95,6 +95,6 @@ final class SessionAppearanceTests: XCTestCase {
 
         // Deleting the renamed session forgets only its look.
         manager.delete(s.id)
-        XCTAssertEqual(store.appearance(forSession: "sess-x"), SessionAppearance())
+        XCTAssertEqual(store.appearance(forSession: "00000000-0000-4000-8000-00000000000a"), SessionAppearance())
     }
 }

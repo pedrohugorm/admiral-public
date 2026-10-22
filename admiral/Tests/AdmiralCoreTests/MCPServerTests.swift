@@ -20,21 +20,138 @@ final class MCPServerTests: XCTestCase {
         (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
     }
 
-    func testToolsListReturnsAllTools() {
-        let (server, _) = makeServer()
+    private static let operatorToolNames: Set<String> = [
+        "inject", "list_sessions", "session_status", "focus", "close_session",
+        "read_recent", "read_screen", "send_keys", "commission_bash", "fleet_pr_status",
+    ]
+    private static let sessionToolNames: Set<String> = [
+        "callsign", "notify", "roster", "hail", "broadcast", "set_goal", "set_goal_self",
+        "update_goals", "commission", "rename_station", "set_structured_output", "pr_status",
+        "add_goals", "AskUserQuestion", "set_output_schema", "schedule_list", "schedule_set",
+        "schedule_delete", "schedule_run", "schedule_history",
+    ]
+
+    private func toolNames(_ server: MCPServer, _ caller: MCPCaller) -> [String] {
         let request = Data(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.utf8)
-        let response = parse(server.handle(requestData: request, sessionToken: "A"))
-        let result = response["result"] as? [String: Any]
-        let tools = result?["tools"] as? [[String: Any]]
-        XCTAssertEqual(tools?.count, 30)
-        XCTAssertEqual(Set(tools?.compactMap { $0["name"] as? String } ?? []),
-                       ["callsign", "notify", "roster", "hail", "broadcast", "set_goal", "set_goal_self",
-                        "update_goals", "commission", "rename_station",
-                        "inject", "set_structured_output", "pr_status", "add_goals", "AskUserQuestion",
-                        "list_sessions", "session_status", "focus", "close_session",
-                        "read_recent", "read_screen", "send_keys", "commission_bash", "fleet_pr_status",
-                        "set_output_schema", "schedule_list", "schedule_set", "schedule_delete",
-                        "schedule_run", "schedule_history"])
+        let result = parse(server.handle(requestData: request, caller: caller))["result"] as? [String: Any]
+        return (result?["tools"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
+    }
+
+    func testOperatorToolsListReturnsAllTools() {
+        let (server, _) = makeServer()
+        let names = toolNames(server, .operator)
+        XCTAssertEqual(names.count, 30)
+        XCTAssertEqual(Set(names), Self.sessionToolNames.union(Self.operatorToolNames))
+        XCTAssertEqual(MCPServer.operatorTools, Self.operatorToolNames)
+    }
+
+    /// A session never sees the operator tools — the app withholds them, not the relay.
+    func testSessionToolsListLeavesOutTheOperatorTools() {
+        let (server, _) = makeServer()
+        let names = toolNames(server, .session("A"))
+        XCTAssertEqual(names.count, 20)
+        XCTAssertEqual(Set(names), Self.sessionToolNames)
+    }
+
+    /// The operator tools act on any tab with no sender identity. A session asking for one —
+    /// even by naming another tab it knows — is refused before anything is typed, read or closed.
+    func testSessionCallerIsRefusedEveryOperatorTool() throws {
+        let (server, host) = makeServer()
+        let cwd = FileManager.default.temporaryDirectory.path
+        let args: [String: [String: Any]] = [
+            "inject": ["to": "bob", "text": "typed"], "send_keys": ["callsign": "bob", "keys": "x"],
+            "read_screen": ["callsign": "bob"], "read_recent": ["callsign": "bob"],
+            "close_session": ["callsign": "bob"], "commission_bash": ["callsign": "sh", "cwd": cwd],
+            "list_sessions": [:], "session_status": ["callsign": "bob"], "focus": ["callsign": "bob"],
+            "fleet_pr_status": [:],
+        ]
+        XCTAssertEqual(Set(args.keys), Self.operatorToolNames)
+        for (name, arguments) in args {
+            let reply = try call(server, name, arguments, .session("A"))
+            XCTAssertTrue(reply.isError, name)
+            XCTAssertTrue(reply.text.contains("\(name) is an operator tool"), reply.text)
+        }
+        XCTAssertEqual(host.sent, [], "nothing was typed into a tab")
+        XCTAssertEqual(toolNames(server, .operator).count, 30)
+        XCTAssertFalse(try call(server, "list_sessions", [:], .operator).text.contains("sh"),
+                       "no bash tab was commissioned")
+        XCTAssertTrue(try call(server, "list_sessions", [:], .operator).text.contains("@bob"),
+                      "bob was not closed")
+    }
+
+    /// The socket has no operator credential: its envelope is a session caller whatever its
+    /// token says, including the operator's internal token.
+    func testEnvelopeIsASessionCallerEvenWithTheOperatorToken() throws {
+        let (server, host) = makeServer()
+        func envelope(_ token: String, _ request: [String: Any]) throws -> [String: Any] {
+            let data = try JSONSerialization.data(withJSONObject: ["token": token, "request": request])
+            return parse(server.handle(envelope: data))
+        }
+        let inject: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                     "params": ["name": "inject", "arguments": ["to": "bob", "text": "typed"]]]
+        for token in [OperatorTokenStore.mcpSessionToken, "A"] {
+            let result = try XCTUnwrap(try envelope(token, inject)["result"] as? [String: Any])
+            XCTAssertEqual(result["isError"] as? Bool, true, token)
+        }
+        XCTAssertEqual(host.sent, [])
+        let list = try envelope(OperatorTokenStore.mcpSessionToken,
+                                ["jsonrpc": "2.0", "id": 2, "method": "tools/list"])
+        let names = ((list["result"] as? [String: Any])?["tools"] as? [[String: Any]])?
+            .compactMap { $0["name"] as? String } ?? []
+        XCTAssertFalse(names.isEmpty)
+        XCTAssertTrue(Set(names).isDisjoint(with: Self.operatorToolNames), "\(names)")
+    }
+
+    /// A token that names no tab is no identity at all: every tool is refused, including the
+    /// ones that never needed a sender (commission, schedule_*).
+    func testSessionTokenThatNamesNoTabIsRefusedEveryTool() throws {
+        let (server, _) = makeServer()
+        let cwd = FileManager.default.temporaryDirectory.path
+        for (name, arguments) in [("roster", [:]), ("commission", ["callsign": "ghost", "cwd": cwd]),
+                                  ("schedule_list", [:]), ("set_output_schema", ["callsign": "bob", "schema": ""]),
+                                  ("rename_station", ["name": "x", "to": "bob"])] as [(String, [String: Any])] {
+            for token in ["Z", "", OperatorTokenStore.mcpSessionToken] {
+                let reply = try call(server, name, arguments, .session(token))
+                XCTAssertTrue(reply.isError, "\(name) as \(token)")
+                XCTAssertTrue(reply.text.contains("names no Admiral tab"), reply.text)
+            }
+        }
+        let sessions = try call(server, "list_sessions", [:], .operator).text
+        XCTAssertFalse(sessions.contains("ghost"), "nothing was commissioned")
+        XCTAssertTrue(sessions.contains("@bob"), "bob was not renamed")
+    }
+
+    /// A session renames, and sets the output schema of, only its own tab; the operator any.
+    func testOwnTabToolsRefuseAnotherTabForASessionButNotTheOperator() throws {
+        let (server, _) = makeServer()
+        let peerRename = try call(server, "rename_station", ["name": "mallory", "to": "bob"], .session("A"))
+        XCTAssertTrue(peerRename.isError)
+        XCTAssertTrue(peerRename.text.contains("rename_station changes only your own tab (@alice)"), peerRename.text)
+        let peerSchema = try call(server, "set_output_schema", ["callsign": "BOB", "schema": ""], .session("A"))
+        XCTAssertTrue(peerSchema.isError)
+        XCTAssertTrue(peerSchema.text.contains("set_output_schema changes only your own tab"), peerSchema.text)
+        XCTAssertTrue(try call(server, "list_sessions", [:], .operator).text.contains("@bob"), "bob kept its name")
+
+        // Naming yourself, or nobody, is your own tab.
+        XCTAssertFalse(try call(server, "rename_station", ["name": "alice2", "to": "alice"], .session("A")).isError)
+        XCTAssertFalse(try call(server, "rename_station", ["name": "alice3"], .session("A")).isError)
+        let ownSchema = try call(server, "set_output_schema", ["callsign": "alice3", "schema": ""], .session("A"))
+        XCTAssertFalse(ownSchema.text.contains("only your own tab"), ownSchema.text)
+
+        // The operator renames any tab.
+        XCTAssertFalse(try call(server, "rename_station", ["name": "robert", "to": "bob"], .operator).isError)
+        XCTAssertTrue(try call(server, "list_sessions", [:], .operator).text.contains("@robert"))
+    }
+
+    private func call(_ server: MCPServer, _ name: String, _ args: [String: Any],
+                      _ caller: MCPCaller) throws -> (isError: Bool, text: String) {
+        let request: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                      "params": ["name": name, "arguments": args]]
+        let data = try JSONSerialization.data(withJSONObject: request)
+        let result = try XCTUnwrap(parse(server.handle(requestData: data, caller: caller))["result"]
+            as? [String: Any])
+        return (result["isError"] as? Bool ?? false,
+                (result["content"] as? [[String: Any]])?.first?["text"] as? String ?? "")
     }
 
     /// `goals` has to reach the model as a real array, or it will send a comma-joined
@@ -323,12 +440,11 @@ final class MCPServerTests: XCTestCase {
         XCTAssertTrue(host.combined.contains("in_reply_to"), host.combined)
     }
 
-    func testToolsCallInjectTypesRawTextWithUnknownToken() {
+    func testOperatorInjectTypesRawText() {
         let (server, host) = makeServer()
-        // Token "Z" is not a registered session — the relay is a service, not a session.
-        // inject must still type the verbatim text (no hail framing) into @bob.
+        // The operator is no session; inject types the verbatim text (no hail framing) into @bob.
         let request = Data(#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"inject","arguments":{"to":"bob","text":"verbatim relay payload"}}}"#.utf8)
-        let response = parse(server.handle(requestData: request, sessionToken: "Z"))
+        let response = parse(server.handle(requestData: request, caller: .operator))
         let result = response["result"] as? [String: Any]
         XCTAssertEqual(result?["isError"] as? Bool, false)
         XCTAssertTrue(host.combined.contains("verbatim relay payload"))
@@ -380,7 +496,7 @@ final class MCPServerTests: XCTestCase {
             let params: [String: Any] = ["name": name, "arguments": args]
             let req: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params]
             let data = try! JSONSerialization.data(withJSONObject: req)
-            let response = parse(server.handle(requestData: data, sessionToken: "A"))
+            let response = parse(server.handle(requestData: data, caller: .operator))
             let result = response["result"] as? [String: Any]
             let content = (result?["content"] as? [[String: Any]])?.first
             let text = content?["text"] as? String ?? ""
@@ -418,7 +534,7 @@ final class MCPServerTests: XCTestCase {
         func commission(_ tool: String, _ args: [String: Any]) -> AgentSession? {
             let params: [String: Any] = ["name": tool, "arguments": args]
             let req: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params]
-            _ = server.handle(requestData: try! JSONSerialization.data(withJSONObject: req), sessionToken: "")
+            _ = server.handle(requestData: try! JSONSerialization.data(withJSONObject: req), caller: .operator)
             return manager.sessions.first { $0.callsign == args["callsign"] as? String }
         }
         let scout = commission("commission", ["callsign": "scout", "cwd": cwd, "scratch": true])
@@ -442,9 +558,11 @@ final class MCPServerTests: XCTestCase {
         let params: [String: Any] = ["name": "read_recent", "arguments": ["callsign": "nope"]]
         let req: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params]
         let data = try! JSONSerialization.data(withJSONObject: req)
-        let response = parse(server.handle(requestData: data, sessionToken: "A"))
+        let response = parse(server.handle(requestData: data, caller: .operator))
         let result = response["result"] as? [String: Any]
         XCTAssertEqual(result?["isError"] as? Bool, true)
+        let text = ((result?["content"] as? [[String: Any]])?.first)?["text"] as? String ?? ""
+        XCTAssertTrue(text.contains("no station @nope"), text)
     }
 
     func testFleetPrStatusEmpty() {
@@ -452,7 +570,7 @@ final class MCPServerTests: XCTestCase {
         let params: [String: Any] = ["name": "fleet_pr_status", "arguments": [:]]
         let req: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params]
         let data = try! JSONSerialization.data(withJSONObject: req)
-        let response = parse(server.handle(requestData: data, sessionToken: "A"))
+        let response = parse(server.handle(requestData: data, caller: .operator))
         let result = response["result"] as? [String: Any]
         let text = ((result?["content"] as? [[String: Any]])?.first)?["text"] as? String ?? ""
         XCTAssertEqual(result?["isError"] as? Bool, false)

@@ -19,23 +19,21 @@ public struct GroupTranscript: Sendable {
 
     /// Adds `message` to the group's file. A file that does not exist yet (first message, or a
     /// group that predates the mirror) is written whole from `log`, which already holds `message`.
+    /// The folder is `0700` and each file `0600` (`PrivateFile`); a file left `0644` by an older
+    /// build is tightened on its next append.
     public func record(_ message: GroupMessage, group: ChatGroup, log: [GroupMessage]) {
-        let fm = FileManager.default
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        PrivateFile.directory(dir)
         let url = url(for: group)
-        if !fm.fileExists(atPath: url.path) {
+        if !FileManager.default.fileExists(atPath: url.path) {
             var all = Data()
             for entry in log {
                 if let line = try? GroupFiles.encoder.encode(entry) { all.append(line); all.append(0x0A) }
             }
-            try? all.write(to: url, options: .atomic)
+            try? PrivateFile.write(all, to: url)
             return
         }
-        guard var line = try? GroupFiles.encoder.encode(message), let handle = try? FileHandle(forWritingTo: url) else { return }
-        defer { try? handle.close() }
-        line.append(0x0A)
-        _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: line)
+        guard let line = try? GroupFiles.encoder.encode(message) else { return }
+        AtomicAppend.line(line, to: url)
     }
 
     /// The group was renamed: its file follows, so the folder still reads by name.

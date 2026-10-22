@@ -21,18 +21,14 @@ enum AtomicAppend {
         var line = data
         line.append(0x0A)
 
-        let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+        // These logs carry prompts and replies: created 0600, and an older 0644 file is
+        // tightened on its next append.
+        let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, PrivateFile.fileMode)
         guard descriptor >= 0 else { return }
         defer { close(descriptor) }
+        _ = fchmod(descriptor, PrivateFile.fileMode)
 
-        line.withUnsafeBytes { buffer in
-            guard let base = buffer.baseAddress else { return }
-            var written = 0
-            while written < buffer.count {
-                let n = write(descriptor, base + written, buffer.count - written)
-                guard n > 0 else { return }  // error or EOF; drop the remainder rather than spin
-                written += n
-            }
-        }
+        // On an error or EOF the remainder is dropped rather than spun on.
+        _ = PrivateFile.writeAll(descriptor, line)
     }
 }

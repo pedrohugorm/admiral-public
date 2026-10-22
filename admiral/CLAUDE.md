@@ -149,9 +149,9 @@ the system's, since the view isn't in the window yet. `Theme.resolved` flattens 
 `SwiftTermHost.appearance` instead, and `AppModel` pushes that from `themeMode`.
 Mutation-test both halves: hand `Theme.surfaceNS` over dynamically → the dark checks FAIL;
 drop the re-apply loop in `appearance`'s `didSet` → the relit checks FAIL.
-**SwiftTerm is tracked as `branch: main` and the resolved revision lives only in the gitignored
-`.xcodeproj`** — two machines drift apart the moment either one cleans, so run this probe after
-a clean build.
+**SwiftTerm is pinned to one `revision:` in `App/project.yml`** (it once rode `branch: main`,
+and two Macs on the same commit ran different SwiftTerms). Bump that revision on purpose to take
+upstream changes, and run this probe after a clean build when you do.
 
 `-probePalette` queries the live emulator over OSC 4. It guards a **silent** regression:
 SwiftTerm's `TerminalOptions` defaults `ansi256PaletteStrategy` to `.base16Lab`, which

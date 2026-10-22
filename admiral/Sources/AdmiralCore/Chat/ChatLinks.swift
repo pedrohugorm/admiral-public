@@ -51,7 +51,7 @@ public enum ChatLinks {
             for text in TerminalLink.proseCandidates(String(candidate)) {
                 let (path, line) = splitLine(text)
                 guard path.contains("/") || path.contains(".") else { continue }
-                guard case let .file(url) = TerminalLink.resolve(path, cwd: cwd, fileExists: fileExists)
+                guard let url = TerminalLink.resolve(path, cwd: cwd, fileExists: fileExists).fileURL
                 else { continue }
                 links.append(ChatLink(offset: offset + leading, length: text.count, url: url, line: line))
                 break

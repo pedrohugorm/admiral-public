@@ -36,9 +36,12 @@ dependency. You can also open a plain **`zsh`** login shell ("New Bash") in any 
   claudes carry `TERM_PROGRAM=Admiral` so the bridge can tell them apart from iTerm2
   sessions. A `hail` asks for nothing back; `needs_reply: true` says so in the text and
   hands the station the id to quote in `in_reply_to`.
-- **Operator MCP** — fleet tools on the same `MCPServer` (hidden from Claude's BridgeMCP
-  list): `list_sessions / session_status / inject / focus / close_session / read_recent /
-  commission_bash / fleet_pr_status`. Phase 2: local HTTP MCP on **:4141 POST /mcp** (bearer auth on the same :4141 server as the chat API).
+- **Operator MCP** — fleet tools on the same `MCPServer`, served only to the operator: a
+  session (the bridge socket) neither sees nor may call `list_sessions / session_status /
+  inject / send_keys / read_screen / focus / close_session / read_recent / commission_bash /
+  fleet_pr_status`. They are on **:4141 POST /mcp** with the operator token as
+  `Authorization: Bearer`; the chat API on the same server (`POST /v1/messages`) needs the
+  same token (as the SDK's API key, `x-api-key`, or Bearer). Settings → Bridge & API → Copy token.
 - **Goals** — `set_goal` takes a **list** of short completion conditions (≤ 280 chars each,
   at most 10; an empty list clears them). They are stored per session and shown in the
   Footprint panel, where right-clicking a goal marks it met, reopens it, or cancels it, and the

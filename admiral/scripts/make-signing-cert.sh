@@ -19,7 +19,10 @@
 #
 set -euo pipefail
 
-CERT_NAME="${ADMIRAL_SIGN_ID:-Admiral Local Signing}"
+# Always this name — the one scripts/sign-app.sh looks for as its self-signed fallback. It never
+# follows $ADMIRAL_SIGN_ID: that names the real "Developer ID Application: …" identity, and a Mac
+# without it would otherwise mint a self-signed impostor carrying the Developer ID's name.
+CERT_NAME="Admiral Local Signing"
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
 if security find-certificate -c "$CERT_NAME" "$KEYCHAIN" >/dev/null 2>&1; then
@@ -61,11 +64,12 @@ openssl pkcs12 -export -legacy -out "$TMP/id.p12" \
   || openssl pkcs12 -export -out "$TMP/id.p12" \
        -inkey "$TMP/key.pem" -in "$TMP/cert.pem" -name "$CERT_NAME" -passout pass:admiral
 
-# -A: let any tool use the private key without a keychain prompt. This is a
-# throwaway local signing key, so the usual "which app may use this key" gate
-# would only mean a dialog on every build.
+# -T /usr/bin/codesign: only codesign may use the private key without a prompt. (This used
+# -A, any process at all, to avoid "a dialog on every build" — but codesign is the only tool
+# that signs, so trusting it alone avoids that dialog just the same, and no other process
+# can sign as this identity silently.) If macOS still asks once, "Always Allow" adds it.
 echo "▶ Importing into the login keychain"
-security import "$TMP/id.p12" -k "$KEYCHAIN" -P admiral -A -f pkcs12
+security import "$TMP/id.p12" -k "$KEYCHAIN" -P admiral -T /usr/bin/codesign -f pkcs12
 
 # Trust it for code signing in the *user* trust domain, so find-identity reports
 # it as valid. Best-effort: signing works from the keychain either way, this only

@@ -16,8 +16,12 @@ struct BridgeAPIView: View {
                 SettingsCard("API server",
                              "Loopback HTTP on this port serves **both** the Anthropic-compatible "
                                 + "chat API (`POST /v1/messages`) and operator MCP "
-                                + "(`POST /mcp`). Chat has **no** auth; MCP requires "
-                                + "`Authorization: Bearer` with the operator token (kept in the Keychain; use Copy token). Binds "
+                                + "(`POST /mcp`). Every route requires the operator token "
+                                + "(kept in the Keychain; use Copy token): MCP and the event "
+                                + "stream as `Authorization: Bearer <token>`; chat clients as "
+                                + "their API key (`x-api-key`, e.g. `ANTHROPIC_API_KEY`) or the "
+                                + "same Bearer header. Browser requests (an `Origin` header or a "
+                                + "non-loopback `Host`) are refused. Binds "
                                 + "`127.0.0.1` only. The switch persists across relaunch. If "
                                 + "the port is busy the server falls back to an ephemeral one.") {
                     VStack(alignment: .leading, spacing: 10) {

@@ -33,7 +33,7 @@ Always build and sign via the scripts — never call `codesign` yourself:
 make build                          # Debug build + scripts/sign-app.sh
 scripts/sign-app.sh path/to/Admiral.app   # sign an existing bundle (helpers first, then the app)
 scripts/release.sh                  # swift test + Release build + sign + install to /Applications
-scripts/release.sh 1.1              # ...and stamp MARKETING_VERSION = 1.1
+scripts/release.sh 1.1.0            # ...and stamp MARKETING_VERSION = 1.1.0 (MAJOR.MINOR.PATCH only)
 ```
 
 **Never** run `codesign --force --deep --sign - …` (ad-hoc) on Admiral.
@@ -51,9 +51,10 @@ Files & Folders) under the app's **designated requirement** (DR).
 
 ## Optional: `ADMIRAL_SIGN_ID`
 
-`ADMIRAL_SIGN_ID` overrides the identity for `sign-app.sh` (and names the cert `make-signing-cert.sh` creates; default for that script
-`Admiral Local Signing`). Set it to use/create a differently
-named identity (set it the same way for both scripts).
+`ADMIRAL_SIGN_ID` overrides the identity for `sign-app.sh`. `make-signing-cert.sh` ignores it and
+always creates `Admiral Local Signing`, so a Mac without the real Developer ID never gets a
+self-signed certificate wearing a `Developer ID Application: …` name. The key is imported with
+`-T /usr/bin/codesign`: codesign may use it without a prompt, no other process may.
 
 ## Troubleshooting
 
@@ -222,8 +223,8 @@ wins and the old item is kept. A failed move never mints a new operator token �
 
 ## API server and the Keychain
 
-The API server (`:4141`) binds immediately at launch and never waits on the Keychain. `POST /mcp`
-and `/sessions/<callsign>/events` answer **503 `token unavailable`** until the operator token has
+The API server (`:4141`) binds immediately at launch and never waits on the Keychain. `POST /mcp`,
+`POST /v1/messages` and `/sessions/<callsign>/events` answer **503 `token unavailable`** until the operator token has
 been resolved in the background, then work without a server restart (also on Rotate). A pending
 Keychain prompt therefore cannot take the API down or push it to another port.
 `AnthropicHTTPServer.stop()` now waits for the listen socket to actually close and `start()` retries
@@ -232,7 +233,11 @@ asynchronous close and fall back to a random port.
 
 ## Operator MCP token: Keychain only
 
-The operator token protects `POST /mcp` and `/sessions/<callsign>/events`. It lives **only in the
+The operator token protects every route of the API server: `POST /mcp`, `POST /v1/messages` and
+`/sessions/<callsign>/events`. Clients send it as `Authorization: Bearer <token>`; an Anthropic SDK
+client can pass it as its API key instead (sent as `x-api-key`, e.g. `ANTHROPIC_API_KEY=<token>`).
+Get it with Settings → Bridge & API → **Copy token**. Requests carrying an `Origin` header or a
+non-loopback `Host` are refused (403) on every route, token or not. It lives **only in the
 Keychain** (generic password, service `com.pedro.admiral.operator-mcp`, account `token`,
 AfterFirstUnlockThisDeviceOnly). There is no token file. A well-formed token is `adm_` + 32
 lowercase hex characters.

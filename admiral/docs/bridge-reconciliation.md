@@ -1,6 +1,6 @@
-# Admiral ↔ iTerm2-bridge TUI: data-layer reconciliation
+# Admiral ↔ iTerm2 bridge TUI: data-layer reconciliation
 
-The bridge Go TUI (`tui/internal/bridge`) and Python (`src/iterm2_bridge`) are the
+The bridge's Go TUI (`tui/internal/bridge`) and Python package are the
 proven source of truth for Claude transcript discovery. This records, per piece,
 whether Admiral **reuses**, **ports (with the bridge's own tests brought over)**, or
 **justifiably diverges** — and why.

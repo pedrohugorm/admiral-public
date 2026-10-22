@@ -151,7 +151,7 @@ public final class SidebarOrderStore {
     public func save(_ order: [UUID]) {
         self.order = order
         guard let data = try? JSONEncoder().encode(order) else { return }
-        try? data.write(to: AdmiralPaths.sidebarOrderFile(base: base), options: .atomic)
+        try? PrivateFile.write(data, to: AdmiralPaths.sidebarOrderFile(base: base))
     }
 }
 

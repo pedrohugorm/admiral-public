@@ -152,6 +152,16 @@ public final class SessionManager: ObservableObject {
     /// the direct-spawn/test arms) are unaffected — the substitution is a no-op.
     nonisolated public static let sessionNamePlaceholder = "{{ADMIRAL_SESSION_NAME}}"
 
+    /// The values `commission` splices into the launch command line bare: a session id must
+    /// parse as a UUID (hex and dashes only), a model must be a `ScheduleModel` and an effort a
+    /// `ScheduleEffort`. Nil or empty model/effort means "no flag" and passes.
+    nonisolated public static func launchValuesValid(sessionID: String?, model: String?, effort: String?) -> Bool {
+        if let sessionID, UUID(uuidString: sessionID) == nil { return false }
+        if let model, !model.isEmpty, ScheduleModel(rawValue: model) == nil { return false }
+        if let effort, !effort.isEmpty, ScheduleEffort(rawValue: effort) == nil { return false }
+        return true
+    }
+
     /// Sessions whose real `claude` child pid has been resolved (so the tree walk stops).
     private var claudePIDResolved: Set<UUID> = []
 
@@ -226,6 +236,13 @@ public final class SessionManager: ObservableObject {
         // Fall back to the manager's configured recipe (matches `executablePath`). The
         // provider is consulted fresh so launch-options edits reach the next commission.
         let agentType = agentType ?? defaultAgentTypeProvider?() ?? defaultAgentType
+        // Everything below is spliced into a `zsh -ilc` command line. A session id, model or
+        // effort that is not what it claims (a restored record, a runs.jsonl entry, a schedule
+        // file) is refused: nothing is spawned, and the returned session carries no claude
+        // session id and is never added — callers already treat that as "no tab started".
+        guard Self.launchValuesValid(sessionID: sessionID, model: model, effort: effort) else {
+            return AgentSession(callsign: callsign, agentType: agentType, cwd: cwd, status: .shell)
+        }
         let sessionID = sessionID ?? UUID().uuidString.lowercased()
         let managesSessionID = agentType.defaultArgs.contains { $0.contains(Self.sessionIDPlaceholder) }
         // claude is launched plainly — `team` is a bridge/Admiral-level label only (used
@@ -322,18 +339,22 @@ public final class SessionManager: ObservableObject {
         // recipe carries one) for the shell-quoted display title, so `--name` reaches claude and
         // `claude --resume`, the session picker, and the statusline all show what Admiral shows.
         // Single-quoted because the name is user text living inside the `zsh -ilc "claude …"`
-        // command string; the `'\''` dance escapes any apostrophe in the name.
+        // command string (`ShellQuote.single`).
         if managesSessionID {
-            let quotedName = "'" + session.displayTitle.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            let quotedName = ShellQuote.single(session.displayTitle)
             args = args.map { $0.replacingOccurrences(of: Self.sessionNamePlaceholder, with: quotedName) }
         }
 
         // A scheduled run names the model and effort its claude runs with. The recipe's claude
-        // invocation is the last statement, so appended flags land on it. Values arrive
-        // validated (a closed set), so they need no quoting.
+        // invocation is the last statement, so appended flags land on it. What is spliced is the
+        // closed enum's own raw value (a bare lowercase word), never the caller's string.
         if managesSessionID, !args.isEmpty {
-            if let model, !model.isEmpty { args[args.count - 1] += " --model \(model)" }
-            if let effort, !effort.isEmpty { args[args.count - 1] += " --effort \(effort)" }
+            if let model = model.flatMap(ScheduleModel.init(rawValue:)) {
+                args[args.count - 1] += " --model \(model.rawValue)"
+            }
+            if let effort = effort.flatMap(ScheduleEffort.init(rawValue:)) {
+                args[args.count - 1] += " --effort \(effort.rawValue)"
+            }
         }
 
         // Install the per-session hooks: write a hooks-only settings file and point `--settings`
@@ -352,7 +373,7 @@ public final class SessionManager: ObservableObject {
             let accept = acceptPeerMessages()
             if HookSettings.write(helper: hookHelper, providerEnv: provider?.env,
                                   acceptPeerMessages: accept, to: settingsURL) {
-                args[args.count - 1] += " --settings '\(settingsURL.path)'"
+                args[args.count - 1] += " --settings \(ShellQuote.single(settingsURL.path))"
                 session.acceptsPeerMessages = accept
                 // Recorded only now: the provider is real once its env is in the file claude
                 // will read. A failed write leaves the tab un-badged and on Anthropic rather
@@ -363,13 +384,13 @@ public final class SessionManager: ObservableObject {
         }
 
         // Register Admiral's own bridge MCP for this session (same as we inject the hook), so
-        // it reaches THIS instance's bridge natively — no external iterm2-bridge dependency.
+        // it reaches THIS instance's bridge natively — no external bridge dependency.
         // Non-strict: the user's other MCP servers still load. Only inject if the config file
         // was actually written, so a failure degrades to "no bridge" rather than a dead launch.
         if managesSessionID, let bridgeMCPCommand, !args.isEmpty {
             let mcpURL = AdmiralPaths.mcpConfigFile(base: supportDir, token: session.token)
             if BridgeMCPConfig.write(command: bridgeMCPCommand, to: mcpURL) {
-                args[args.count - 1] += " --mcp-config '\(mcpURL.path)'"
+                args[args.count - 1] += " --mcp-config \(ShellQuote.single(mcpURL.path))"
             }
         }
 
@@ -378,7 +399,7 @@ public final class SessionManager: ObservableObject {
         // Only when the folder exists: a missing --plugin-dir is the user's to debug, not ours.
         if managesSessionID, let modDir, !args.isEmpty,
            FileManager.default.fileExists(atPath: modDir) {
-            args[args.count - 1] += " --plugin-dir '\(modDir)'"
+            args[args.count - 1] += " --plugin-dir \(ShellQuote.single(modDir))"
         }
 
         let id = session.id

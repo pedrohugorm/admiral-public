@@ -44,13 +44,65 @@ final class TerminalPromptTests: XCTestCase {
     }
 
     /// An end marker inside the body would close the paste early and type the rest — the very
-    /// burst this exists to avoid — so markers in the pasted part are dropped.
-    func testBracketedDropsMarkersInsideThePaste() {
+    /// burst this exists to avoid — so markers in the pasted part lose their ESC and stay as
+    /// inert text.
+    func testBracketedDefusesMarkersInsideThePaste() {
         let prompt = TerminalPrompt(typedBefore: "", pasted: "a\u{1b}[201~b\u{1b}[200~c", typedAfter: "")
-        XCTAssertEqual(prompt.bracketed, "\u{1b}[200~abc\u{1b}[201~")
+        XCTAssertEqual(prompt.bracketed, "\u{1b}[200~a[201~b[200~c\u{1b}[201~")
     }
 
     func testNothingPastedMeansNoMarkers() {
         XCTAssertEqual(TerminalPrompt(typed: "hi").bracketed, "hi")
+    }
+
+    /// Removing the end marker and then the start marker in one pass let the pieces around the
+    /// start marker re-form an end marker: `ESC[20` + `ESC[200~` + `1~` became `ESC[201~`, which
+    /// closed the paste early and typed the rest. No ESC survives in the pasted part.
+    func testBracketedCannotReformAnEndMarkerFromThePiecesAroundAStartMarker() {
+        let body = "\u{1b}[20" + "\u{1b}[200~" + "1~ then typed"
+        let prompt = TerminalPrompt(typedBefore: "@x: ", pasted: body, typedAfter: " end")
+        let wire = prompt.bracketed
+        XCTAssertEqual(wire, "@x: \u{1b}[200~[20[200~1~ then typed\u{1b}[201~ end")
+        XCTAssertEqual(wire.components(separatedBy: "\u{1b}[201~").count, 2,
+                       "exactly one end marker, the real one")
+    }
+
+    // MARK: - Sanitizing
+
+    func testSanitizedTurnsCRAndCRLFIntoLF() {
+        XCTAssertEqual(TerminalPrompt.sanitized("a\rb\r\nc\nd\n\re"), "a\nb\nc\nd\n\ne")
+    }
+
+    func testSanitizedDropsEscapesControlsDELAndC1ButKeepsTabAndText() {
+        let hostile = "ok\u{1b}[201~\u{03}\u{04}\u{7f}\u{9b}201~\u{85}\u{00}\tdone é 🚀"
+        XCTAssertEqual(TerminalPrompt.sanitized(hostile), "ok[201~201~\tdone é 🚀")
+    }
+
+    func testPlainTextIsUnchangedBySanitizing() {
+        let text = "@alice: fix the build (#12) — tabs\tand \"quotes\" stay"
+        XCTAssertEqual(TerminalPrompt.sanitized(text), text)
+    }
+
+    /// The typed ends and the body all pass through it, so nothing hostile reaches the PTY on
+    /// either the typed or the pasted path.
+    func testFramingSanitizesEveryPart() {
+        let prompt = TerminalPrompt.framing("hi\u{1b}[2J\u{03}", before: "@x\u{1b}: ", after: " end\u{7f}")
+        XCTAssertEqual(prompt, TerminalPrompt(typed: "@x: hi[2J end"))
+    }
+
+    func testInjectedSanitizes() {
+        XCTAssertEqual(TerminalPrompt.injected("run\u{1b}[A\u{15}it"), TerminalPrompt(typed: "run[Ait"))
+    }
+
+    /// A typed newline submits the prompt early, so a short text holding one is pasted.
+    func testAShortBodyWithANewlineIsPastedNotTyped() {
+        let prompt = TerminalPrompt.framing("ok\nsecond", before: "@x: ", after: " end")
+        XCTAssertEqual(prompt, TerminalPrompt(typedBefore: "@x: ", pasted: "ok\nsecond", typedAfter: " end"))
+    }
+
+    func testAShortInjectWithACarriageReturnIsPastedWithItsTail() {
+        let prompt = TerminalPrompt.injected("one\rtwo")
+        XCTAssertEqual(prompt, TerminalPrompt(typedBefore: "", pasted: "one\ntwo",
+                                              typedAfter: TerminalPrompt.injectedTail))
     }
 }

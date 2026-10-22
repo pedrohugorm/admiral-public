@@ -3,14 +3,16 @@ import Darwin
 
 // admiral-bridge-mcp — the bridge MCP server, bundled inside Admiral and injected per
 // session (via `--mcp-config`), so Admiral-hosted claudes reach THIS instance's bridge
-// with no dependency on the external iterm2-bridge package.
+// with no dependency on the external bridge package.
 //
 // It's a transparent MCP-over-stdio proxy to the app's own `MCPServer`, which is served on
 // a loopback Unix socket by `BridgeSocketServer`. claude speaks newline-delimited JSON-RPC
 // on stdin/stdout; for each message we wrap it in the socket envelope
 // `{"token": <ADMIRAL_SESSION>, "request": <jsonrpc>}`, send it to the socket, and return
 // the reply. Because tools/list, tools/call, and initialize are all answered by the one
-// Swift `MCPServer`, the tool surface can never drift — this binary declares nothing.
+// Swift `MCPServer`, the tool surface can never drift — this binary declares nothing, and
+// filters nothing: the socket is always a session caller, so the app itself withholds the
+// operator tools.
 //
 // The socket is chosen per instance via `ADMIRAL_SOCKET` (Admiral exports its own path,
 // which is profile-aware), so a dev/test instance's sessions talk to that instance's bridge.
@@ -22,15 +24,6 @@ let socketPath: String = ProcessInfo.processInfo.environment["ADMIRAL_SOCKET"] ?
     )) ?? FileManager.default.temporaryDirectory
     return base.appendingPathComponent("Admiral/bridge.sock").path
 }()
-
-// Tools the socket exposes for internal use (the agent-chat relay) but that the
-// claude-facing bridge never surfaced — hidden from tools/list to match the prior relay exactly.
-let hiddenTools: Set<String> = [
-    "inject",
-    // Operator fleet tools — stations should not see god-mode controls.
-    "list_sessions", "session_status", "focus", "close_session",
-    "read_recent", "read_screen", "send_keys", "commission_bash", "fleet_pr_status",
-]
 
 /// One request/response round-trip over the Admiral bridge socket (one line each way).
 func callSocket(_ envelope: Data) -> Data? {
@@ -86,7 +79,7 @@ while let line = readLine(strippingNewline: true) {
 
     guard let id else { continue }   // notification: forwarded, nothing to return
 
-    guard var respData = response, !respData.isEmpty else {
+    guard let respData = response, !respData.isEmpty else {
         // Socket unreachable (Admiral not running / wrong instance): answer with a JSON-RPC
         // error so claude surfaces it instead of hanging on the request.
         let err: [String: Any] = [
@@ -97,16 +90,7 @@ while let line = readLine(strippingNewline: true) {
         continue
     }
 
-    // Hide internal tools from tools/list so the claude-facing surface matches the old relay.
-    if (msg["method"] as? String) == "tools/list",
-       var obj = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
-       var result = obj["result"] as? [String: Any],
-       var tools = result["tools"] as? [[String: Any]] {
-        tools.removeAll { hiddenTools.contains(($0["name"] as? String) ?? "") }
-        result["tools"] = tools
-        obj["result"] = result
-        respData = (try? JSONSerialization.data(withJSONObject: obj)) ?? respData
-    }
-
+    // The app already leaves the operator tools out of a session's tools/list (and refuses
+    // them), so the reply is passed through untouched.
     emit(respData)
 }

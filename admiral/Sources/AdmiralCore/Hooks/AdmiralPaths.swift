@@ -27,10 +27,12 @@ public enum AdmiralPaths {
         return dir
     }
 
-    /// `<base>/sessions/<token>` (created if missing).
+    /// `<base>/sessions/<token>` (created if missing). The token arrives as `ADMIRAL_SESSION`
+    /// in the hook helper's environment, so it is `sanitized` like a payload session id and
+    /// can never name a directory outside `sessions/`.
     public static func sessionDir(base: URL, token: String) -> URL {
         let dir = base.appendingPathComponent("sessions", isDirectory: true)
-            .appendingPathComponent(token, isDirectory: true)
+            .appendingPathComponent(sanitized(token), isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
@@ -101,7 +103,8 @@ public enum AdmiralPaths {
     /// (which prepends a member's unseen messages), so it is plain files like goals.
     public static func groupsDir(base: URL) -> URL {
         let dir = base.appendingPathComponent("groups", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: Int(PrivateFile.directoryMode)])
         return dir
     }
 
@@ -171,12 +174,15 @@ public enum AdmiralPaths {
         base.appendingPathComponent("hooks.json")
     }
 
-    /// A session id arrives from an untrusted payload; anything outside a safe alphabet
-    /// becomes `_` so it cannot traverse out of the directory.
-    static func sanitized(_ component: String) -> String {
+    /// A session id arrives from an untrusted payload (and a token from the environment);
+    /// anything outside a safe alphabet becomes `_`, and a name of dots alone (`.`, `..`)
+    /// becomes `_`, so it is always one plain path component that cannot traverse out of the
+    /// directory. A UUID passes through unchanged.
+    public static func sanitized(_ component: String) -> String {
         let safe = String(component.map { character in
-            character.isLetter || character.isNumber || "._-".contains(character) ? character : "_"
+            character.isASCII && (character.isLetter || character.isNumber) || "._-".contains(character)
+                ? character : "_"
         })
-        return safe.isEmpty ? "_" : safe
+        return safe.allSatisfy({ $0 == "." }) ? "_" : safe
     }
 }

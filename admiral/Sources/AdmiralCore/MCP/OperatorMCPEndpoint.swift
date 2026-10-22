@@ -1,7 +1,8 @@
 import Foundation
 
 /// HTTP front door for operator MCP: `POST /mcp` with `Authorization: Bearer <token>`.
-/// Same `MCPServer` the Unix-socket BridgeMCP uses — full tool list (no Claude hide filter).
+/// Same `MCPServer` the Unix-socket BridgeMCP uses, called as `.operator`: the full tool
+/// list, including the operator tools a session is refused.
 @MainActor
 public struct OperatorMCPEndpoint {
     private let mcp: MCPServer
@@ -25,6 +26,10 @@ public struct OperatorMCPEndpoint {
     }
 
     public func handle(_ request: HTTPRequest) -> Data {
+        guard !request.looksBrowserOriginated else {
+            return Self.jsonError(status: 403, code: -32003,
+                                  message: "cross-origin or non-loopback request refused")
+        }
         guard Self.isMCPPath(request.path) else {
             return Self.jsonError(status: 404, code: -32000, message: "not found: \(request.path)")
         }
@@ -43,26 +48,27 @@ public struct OperatorMCPEndpoint {
         }
         // Notifications (no id) return empty body with 202 in some transports; we still
         // run handle which returns empty Data for notifications.
-        let response = mcp.handle(
-            requestData: request.body,
-            sessionToken: OperatorTokenStore.mcpSessionToken
-        )
+        // Authorized by the operator token above: the only place `.operator` is decided.
+        let response = mcp.handle(requestData: request.body, caller: .operator)
         if response.isEmpty {
             return HTTPWire.response(status: 202, body: Data())
         }
         return HTTPWire.response(status: 200, body: response)
     }
 
-    /// The operator token check, shared by every route it guards (`/mcp`, the session
-    /// event stream): `Authorization: Bearer <token>` or `X-Admiral-Operator-Token`.
+    /// The operator token check, shared by every route it guards (`/mcp`, `/v1/messages`, the
+    /// session event stream): `Authorization: Bearer <token>`, `x-api-key` (what Anthropic
+    /// SDK clients send their API key as) or `X-Admiral-Operator-Token`.
     static func isAuthorized(_ request: HTTPRequest, token expectedToken: String) -> Bool {
         if let auth = request.headers["authorization"],
            auth.lowercased().hasPrefix("bearer ") {
             let token = String(auth.dropFirst(7)).trimmingCharacters(in: .whitespaces)
             return timingSafeEqual(token, expectedToken)
         }
-        if let header = request.headers["x-admiral-operator-token"] {
-            return timingSafeEqual(header.trimmingCharacters(in: .whitespaces), expectedToken)
+        for name in ["x-api-key", "x-admiral-operator-token"] {
+            if let header = request.headers[name] {
+                return timingSafeEqual(header.trimmingCharacters(in: .whitespaces), expectedToken)
+            }
         }
         return false
     }

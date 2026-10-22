@@ -94,7 +94,9 @@ struct ChatView: View {
             }
             .overlay(alignment: .bottom) { jumpToLatest }
             .environment(\.openURL, OpenURLAction { url in
-                guard url.isFileURL else { return .systemAction }
+                guard url.isFileURL else {
+                    return TerminalLink.isWebURL(url) ? .systemAction : .discarded
+                }
                 model.openChatFile(url)
                 return .handled
             })

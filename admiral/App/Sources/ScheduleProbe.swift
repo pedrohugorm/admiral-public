@@ -29,7 +29,9 @@ extension AppModel {
                 let request: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call",
                                               "params": ["name": tool, "arguments": args]]
                 guard let body = try? JSONSerialization.data(withJSONObject: request) else { return ("", true) }
-                let data = self.mcp.handle(requestData: body, sessionToken: "schedule-probe")
+                // Admiral itself is calling, not a tab: a session token here names no tab
+                // and would be refused.
+                let data = self.mcp.handle(requestData: body, caller: .operator)
                 let result = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["result"]
                     as? [String: Any] ?? [:]
                 return ((result["content"] as? [[String: Any]])?.first?["text"] as? String ?? "",

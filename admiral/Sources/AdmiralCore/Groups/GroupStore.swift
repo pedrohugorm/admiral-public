@@ -136,15 +136,8 @@ public final class GroupStore: ObservableObject {
                                    symbol: symbol, text: text, target: target,
                                    reaction: reaction, reactionTo: reactionTo)
         let url = AdmiralPaths.groupLogFile(base: base, group: id)
-        if var line = try? GroupFiles.encoder.encode(message) {
-            line.append(0x0A)
-            if let handle = try? FileHandle(forWritingTo: url) {
-                defer { try? handle.close() }
-                _ = try? handle.seekToEnd()
-                try? handle.write(contentsOf: line)
-            } else {
-                try? line.write(to: url, options: .atomic)
-            }
+        if let line = try? GroupFiles.encoder.encode(message) {
+            AtomicAppend.line(line, to: url)   // 0600: the log is the conversation
         }
         logs[id, default: []].append(message)
         if let group = group(id) { transcript?.record(message, group: group, log: logs[id] ?? [message]) }
@@ -192,6 +185,6 @@ public final class GroupStore: ObservableObject {
 
     private func saveGroups() {
         guard let data = try? JSONEncoder().encode(groups) else { return }
-        try? data.write(to: AdmiralPaths.groupsFile(base: base), options: .atomic)
+        try? PrivateFile.write(data, to: AdmiralPaths.groupsFile(base: base))
     }
 }

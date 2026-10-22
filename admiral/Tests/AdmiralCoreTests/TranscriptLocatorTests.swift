@@ -7,7 +7,7 @@ final class TranscriptLocatorTests: XCTestCase {
     func testEncodeProjectDir() {
         let cases = [
             "/Users/me/code/admiral": "-Users-me-code-admiral",
-            "/Users/me/code/brain_mcp": "-Users-me-code-brain-mcp",     // '_' -> '-'
+            "/Users/me/code/my_project": "-Users-me-code-my-project",   // '_' -> '-'
             "/Users/me/foo.bar": "-Users-me-foo-bar",                   // '.' -> '-'
         ]
         for (input, want) in cases {

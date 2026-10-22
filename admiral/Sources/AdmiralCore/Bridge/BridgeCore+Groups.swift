@@ -67,7 +67,7 @@ extension BridgeCore {
             let members = group.members.map { id in
                 peers[id].map { "@\($0.callsign) (\($0.status.rawValue))" } ?? "(closed tab)"
             }
-            var line = "\(group.name) — \(members.joined(separator: ", "))"
+            var line = "\(GroupPrompt.inline(group.name)) — \(members.joined(separator: ", "))"
             if group.isPaused { line += " — paused (agents used their budget; waiting on the user)" }
             return line
         }.joined(separator: "\n"))
@@ -159,9 +159,12 @@ extension BridgeCore {
     private func changeMembership(token: String, group ref: String, member: String,
                                   _ change: (GroupStore, UUID, UUID) -> Result<ChatGroup, GroupError>,
                                   done verb: (String) -> String) -> BridgeResult {
-        guard let groups else { return Self.noGroups }
-        guard manager.session(forToken: token) != nil else { return .failure("error: unknown caller") }
-        guard let group = groups.store.group(ref: ref) else { return .failure(GroupError.noSuchGroup(ref).description) }
+        // Only a member changes who is in a group, as for rename and delete.
+        let groups: GroupService, group: ChatGroup
+        switch ownGroup(token: token, ref: ref) {
+        case let .failure(message): return message
+        case let .success((service, owned)): (groups, group) = (service, owned)
+        }
         let peer: GroupPeer
         switch resolve(member, groups) {
         case let .success(found): peer = found

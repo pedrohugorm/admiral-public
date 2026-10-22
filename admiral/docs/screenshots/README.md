@@ -8,7 +8,12 @@ APP=admiral/App/build/Build/Products/Release/Admiral.app
 iso(){ t=$(uuidgen|cut -c1-8); open -n -W --env ADMIRAL_SUPPORT_DIR=/tmp/admiral-iso-$t --env ADMIRAL_PROFILE=shots-$t "$@"; }
 iso $APP --args -probeGroupsUI /tmp/shots/groups      # sidebar, group chat, @ picker, ask, members, new group, footprint
 iso $APP --args -probeSheets   /tmp/shots/sheets      # schedules + every Settings section
-iso --env ADMIRAL_DEMO=1 --env ADMIRAL_SNAPSHOT=/tmp/shots/main-window.png $APP   # main window
+# main window: the REAL window (demo fleet, "Scheduled ordering" open in Chat), captured by window id
+S=/tmp/admiral-iso-main; mkdir -p $S; echo '{"version":1,"features":{"chatView":true,"groups":true}}' > $S/config.json
+open -n --env ADMIRAL_SUPPORT_DIR=$S --env ADMIRAL_PROFILE=shots-main --env ADMIRAL_DEMO=1 $APP; sleep 8
+screencapture -x -o -l <windowID of that pid, via CGWindowListCopyWindowInfo> /tmp/shots/main-window.png   # dark mode; quit it after
+# screencapture embeds the display's ICC profile, which names the monitor model: convert to sRGB before committing
+sips -m "/System/Library/ColorSync/Profiles/sRGB Profile.icc" /tmp/shots/main-window.png
 ```
 
 Mapping: `main-window`←main; `sidebar`/`sidebar-rail`/`group-*`/`new-group`/`footprint*`←groups;

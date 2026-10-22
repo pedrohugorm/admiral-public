@@ -39,7 +39,7 @@ public enum GroupFiles {
     @discardableResult
     public static func writeCursors(_ all: [String: Int], base: URL, group: UUID) -> Bool {
         guard let data = try? JSONEncoder().encode(all) else { return false }
-        return (try? data.write(to: AdmiralPaths.groupCursorsFile(base: base, group: group), options: .atomic)) != nil
+        return (try? PrivateFile.write(data, to: AdmiralPaths.groupCursorsFile(base: base, group: group))) != nil
     }
 
     @discardableResult
@@ -65,7 +65,7 @@ public enum GroupFiles {
         let url = AdmiralPaths.groupCallsignsFile(base: base)
         // Called on the status tick: an unchanged fleet touches no file.
         if let data = try? encoder.encode(callsigns), (try? Data(contentsOf: url)) != data {
-            try? data.write(to: url, options: .atomic)
+            try? PrivateFile.write(data, to: url)
         }
     }
 }

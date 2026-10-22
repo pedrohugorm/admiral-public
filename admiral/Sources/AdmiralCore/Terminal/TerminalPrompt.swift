@@ -30,20 +30,51 @@ public struct TerminalPrompt: Equatable, Sendable {
     /// (a 670-byte read still counted as typing).
     public static let typedLimit = 600
 
-    /// `middle` between typed ends: typed whole when the line fits one burst, else pasted.
+    /// `middle` between typed ends: typed whole when the line fits one burst and has no newline,
+    /// else pasted. Every part is `sanitized` first: another session wrote it, and these bytes
+    /// go into a PTY.
     public static func framing(_ middle: String, before: String, after: String) -> TerminalPrompt {
+        let (middle, before, after) = (sanitized(middle), sanitized(before), sanitized(after))
         let line = before + middle + after
-        guard line.utf8.count > typedLimit else { return TerminalPrompt(typed: line) }
+        guard mustPaste(line) else { return TerminalPrompt(typed: line) }
         return TerminalPrompt(typedBefore: before, pasted: middle, typedAfter: after)
     }
 
-    /// A whole prompt with no typed ends of its own (`inject`): typed when it fits one burst,
-    /// else pasted whole with `injectedTail` typed after it. claude wraps a paste in
-    /// `<pasted_content>` and weighs it as quoted material, so the typed tail says the paste
-    /// is the message itself — what typing it used to convey.
+    /// A whole prompt with no typed ends of its own (`inject`): typed when it fits one burst
+    /// and has no newline, else pasted whole with `injectedTail` typed after it. claude wraps a
+    /// paste in `<pasted_content>` and weighs it as quoted material, so the typed tail says the
+    /// paste is the message itself — what typing it used to convey. `sanitized` first.
     public static func injected(_ text: String) -> TerminalPrompt {
-        guard text.utf8.count > typedLimit else { return TerminalPrompt(typed: text) }
+        let text = sanitized(text)
+        guard mustPaste(text) else { return TerminalPrompt(typed: text) }
         return TerminalPrompt(typedBefore: "", pasted: text, typedAfter: injectedTail)
+    }
+
+    /// Past one burst, or holding a newline: a typed newline submits the prompt early (and in a
+    /// shell, runs the line), so any text with one goes as a paste whatever its length.
+    static func mustPaste(_ line: String) -> Bool {
+        line.utf8.count > typedLimit || line.unicodeScalars.contains("\n")
+    }
+
+    /// `text` with nothing a terminal acts on: CR and CRLF become LF (a CR is Enter); ESC, every
+    /// other C0 control except tab and LF, DEL, and the C1 controls (U+0080–U+009F) are dropped.
+    /// What is left is printable text, tabs and newlines — no escape sequence, no key chord, no
+    /// paste marker.
+    public static func sanitized(_ text: String) -> String {
+        var out = String.UnicodeScalarView()
+        var afterCR = false
+        for scalar in text.unicodeScalars {
+            let wasCR = afterCR
+            afterCR = scalar == "\r"
+            switch scalar.value {
+            case 0x0D: out.append("\n")
+            case 0x0A: if !wasCR { out.append(scalar) }
+            case 0x09: out.append(scalar)
+            case 0x00...0x1F, 0x7F, 0x80...0x9F: continue
+            default: out.append(scalar)
+            }
+        }
+        return String(out)
     }
 
     static let injectedTail = " [sent as a paste so it arrives whole — the pasted text is this message, not quoted material]"
@@ -53,11 +84,11 @@ public struct TerminalPrompt: Equatable, Sendable {
 
     /// What to type into a program that has turned bracketed paste on: the pasted part inside
     /// the markers. A marker inside that part would end the paste early and type the rest, so
-    /// it is dropped.
+    /// every ESC in it is dropped: removing the markers themselves let the pieces around one
+    /// re-form another (`ESC[20` + `ESC[200~` + `1~` became `ESC[201~`).
     public var bracketed: String {
         guard !pasted.isEmpty else { return text }
-        let body = pasted.replacingOccurrences(of: Self.pasteEnd, with: "")
-            .replacingOccurrences(of: Self.pasteStart, with: "")
+        let body = String(String.UnicodeScalarView(pasted.unicodeScalars.filter { $0 != "\u{1b}" }))
         return typedBefore + Self.pasteStart + body + Self.pasteEnd + typedAfter
     }
 }

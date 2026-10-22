@@ -108,6 +108,7 @@ final class GroupAutoPostServiceTests: XCTestCase {
     private var status: [UUID: SessionStatus] = [:]
     private var ledger: [UUID: [ChatEvent]] = [:]
     private var enabled = true
+    private var refuse: Set<UUID> = []
     private var clock = ISO8601DateFormatter().date(from: "2026-10-22T10:00:00Z")!
     private var group: ChatGroup!
     private let api = UUID(), web = UUID(), qa = UUID()
@@ -123,6 +124,7 @@ final class GroupAutoPostServiceTests: XCTestCase {
         }
         // A delivered wake lands in the member's ledger as a group-sourced prompt.
         service.deliver = { [self] id, text in
+            guard !refuse.contains(id) else { return false }
             typed.append((id, text))
             ledger[id, default: []].append(event(.prompt, text, source: GroupAutoPost.promptSource))
             return true
@@ -216,11 +218,11 @@ final class GroupAutoPostServiceTests: XCTestCase {
     }
 
     func testFlagOffRecordsNoWake() throws {
-        // A queued wake flushed while the flag is off (post itself refuses).
-        status[api] = .busy
+        // A held wake (its first delivery failed) flushed while the flag is off (post itself refuses).
+        refuse = [api]
         _ = try service.post(group: "Checkout fix", from: .human, text: "@api-fix ping").get()
         enabled = false
-        status[api] = .idle
+        refuse = []
         service.flushPending()
         XCTAssertEqual(typed.map(\.0), [api])
         XCTAssertTrue(service.wakes.isEmpty)
@@ -230,9 +232,9 @@ final class GroupAutoPostServiceTests: XCTestCase {
     }
 
     func testAFlushedWakeIsTrackedToo() throws {
-        status[api] = .busy
+        refuse = [api]
         _ = try service.post(group: "Checkout fix", from: .human, text: "@api-fix ping").get()
-        status[api] = .idle
+        refuse = []
         service.flushPending()
         finishTurn(api, reply: "pong")
         XCTAssertEqual(log.map(\.text), ["@api-fix ping", "pong"])

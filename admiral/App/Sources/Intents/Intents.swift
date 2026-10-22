@@ -112,6 +112,10 @@ struct HailIntent: AppIntent {
     @Parameter(title: "Message") var body: String
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        // Typed into another session as a prompt: confirmed first, like SendMessage.
+        try await requestConfirmation(
+            result: .result(dialog: "Send “\(body)” from \(from.callsign) to @\(to)?")
+        )
         let result = try await MainActor.run { () -> BridgeResult in
             let (model, sender) = try requireSession(from.id)
             return model.bridge.hail(fromToken: sender.token, to: to, body: body)
@@ -128,6 +132,10 @@ struct BroadcastIntent: AppIntent {
     @Parameter(title: "Message") var body: String
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        // Typed into every peer session as a prompt: confirmed first, like SendMessage.
+        try await requestConfirmation(
+            result: .result(dialog: "Broadcast “\(body)” from \(from.callsign) to every station?")
+        )
         let result = try await MainActor.run { () -> BridgeResult in
             let (model, sender) = try requireSession(from.id)
             return model.bridge.broadcast(fromToken: sender.token, body: body)
@@ -147,9 +155,16 @@ struct CommissionSessionIntent: AppIntent {
     @Parameter(title: "Directory") var directory: String?
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        // The new session runs claude unattended in that folder: only an existing folder,
+        // and only once the user confirms, like SendMessage.
+        guard let cwd = CommissionDirectory.resolve(
+            directory, home: FileManager.default.homeDirectoryForCurrentUser.path)
+        else { throw AdmiralIntentError.notADirectory(directory ?? "") }
+        try await requestConfirmation(
+            result: .result(dialog: "Launch a new session \(callsign) in \(cwd)?")
+        )
         try await MainActor.run {
             let model = try requireModel()
-            let cwd = directory ?? FileManager.default.homeDirectoryForCurrentUser.path
             model.sessions.commission(callsign: callsign, cwd: cwd)
         }
         return .result(dialog: "Commissioned \(callsign).")

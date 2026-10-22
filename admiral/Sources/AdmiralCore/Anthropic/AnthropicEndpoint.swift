@@ -1,7 +1,8 @@
 import Foundation
 
 /// The Anthropic-compatible endpoint: routes `POST /v1/messages` to the Admiral tab
-/// named by the required `ADMIRAL_TAB_NAME` header. `model` is left to mean what it
+/// named by the required `ADMIRAL_TAB_NAME` header. Requires the operator token
+/// (`x-api-key`, which the Anthropic SDKs send as their API key, or `Authorization: Bearer`). `model` is left to mean what it
 /// means everywhere else — it is echoed back, never used to pick a tab.
 /// Owns the whole request lifecycle — tab resolution, delta detection, busy gate,
 /// injection, transcript capture, completion — and emits raw HTTP bytes so the
@@ -62,9 +63,13 @@ public final class AnthropicEndpoint {
     private let config: Config
     private let run: TabRun
     private var inFlight: Set<UUID> = []
+    /// The operator token, the same one `/mcp` checks; read per request, so it can arrive
+    /// (or rotate) after the server is up. Empty = 503 for everyone.
+    private let tokenProvider: OperatorTokenProvider
 
-    public init(backend: AnthropicBackend, config: Config = Config()) {
+    public init(backend: AnthropicBackend, tokenProvider: OperatorTokenProvider, config: Config = Config()) {
         self.backend = backend
+        self.tokenProvider = tokenProvider
         self.config = config
         run = TabRun(backend: backend, config: TabRun.Config(
             busySeenTimeout: config.busySeenTimeout, turnTimeout: config.turnTimeout,
@@ -76,8 +81,20 @@ public final class AnthropicEndpoint {
     /// Handle one parsed HTTP request; `emit` receives raw response bytes (a single
     /// buffered response, or — for streaming, Task 6 — head + SSE frames).
     public func handle(_ request: HTTPRequest, emit: @escaping (Data) -> Void) async {
-        guard !Self.looksBrowserOriginated(request) else {
+        guard !request.looksBrowserOriginated else {
             emit(errorResponse(403, "permission_error", "cross-origin or non-loopback request refused"))
+            return
+        }
+        // Every request types into a tab, so it needs the operator token, like /mcp.
+        switch OperatorAuthResult.check(request, expected: tokenProvider.token) {
+        case .ok: break
+        case .unavailable:
+            emit(errorResponse(503, "api_error", "token unavailable — the operator token is still "
+                + "being resolved from the Keychain; retry shortly"))
+            return
+        case .unauthorized:
+            emit(errorResponse(401, "authentication_error", "unauthorized — send the operator token "
+                + "as x-api-key or Authorization: Bearer (Settings → Bridge & API → Copy token)"))
             return
         }
         guard request.method == "POST", request.path == "/v1/messages" else {
@@ -294,32 +311,5 @@ public final class AnthropicEndpoint {
 
     private func errorResponse(_ status: Int, _ type: String, _ message: String) -> Data {
         HTTPWire.response(status: status, body: AnthropicWire.error(type: type, message: message))
-    }
-
-    /// Reject requests that look like they came from a browser rather than an
-    /// Anthropic SDK client. Browsers always send `Origin` on cross-origin
-    /// fetch/XHR; SDK clients (Python/TS/curl) never do. A DNS-rebinding
-    /// attacker reaches the loopback server via a hostname that resolves to
-    /// 127.0.0.1, so a non-loopback `Host` header is the other tell.
-    private static let allowedLoopbackHosts: Set<String> = ["127.0.0.1", "localhost", "[::1]"]
-
-    private static func looksBrowserOriginated(_ request: HTTPRequest) -> Bool {
-        if let origin = request.headers["origin"], !origin.isEmpty { return true }
-        if let host = request.headers["host"], !host.isEmpty {
-            if !allowedLoopbackHosts.contains(hostWithoutPort(host)) { return true }
-        }
-        return false
-    }
-
-    /// Strip a trailing `:port` from a `Host` header value, preserving the
-    /// bracket form of an IPv6 literal (e.g. `[::1]:4141` -> `[::1]`).
-    private static func hostWithoutPort(_ host: String) -> String {
-        if host.hasPrefix("["), let bracketEnd = host.firstIndex(of: "]") {
-            return String(host[...bracketEnd])
-        }
-        if let colon = host.lastIndex(of: ":") {
-            return String(host[..<colon])
-        }
-        return host
     }
 }
