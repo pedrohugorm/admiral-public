@@ -1,0 +1,119 @@
+name: Admiral
+options:
+  bundleIdPrefix: com.pedro
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"   # dev builds only; scripts/release.sh stamps the git commit count
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_REQUIRED: "NO"
+    ENABLE_HARDENED_RUNTIME: "NO"
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+packages:
+  AdmiralCore:
+    path: ..
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    # Pinned. Riding `main` meant each machine — and every CI release run — resolved whatever
+    # main was that day (the generated .xcodeproj and its Package.resolved are gitignored): two
+    # Macs on the same commit once ran different SwiftTerms (one painted every terminal white),
+    # and upstream 15fed4f broke the release build (getTerminal gone). To take upstream changes,
+    # bump this revision on purpose and run `-probeSurface` after (upstream e4f31b0 made the
+    # view's layer, not the per-run fill, paint the default background).
+    revision: ab99ba3e484c44c68bd3d44ae31536a21b5ce15f
+targets:
+  Admiral:
+    type: application
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pedro.admiral
+        PRODUCT_NAME: Admiral
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_FILE: Admiral-Info.plist
+        INFOPLIST_KEY_LSUIElement: "NO"
+        INFOPLIST_KEY_CFBundleDisplayName: Admiral
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        MARKETING_VERSION: "1.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies:
+      - target: admiral-hook
+      - target: admiral-bridge-mcp
+      - package: AdmiralCore
+        product: AdmiralCore
+      - package: SwiftTerm
+        product: SwiftTerm
+    postBuildScripts:
+      - name: Embed helpers
+        script: |
+          set -e
+          HELPERS="$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Helpers"
+          mkdir -p "$HELPERS"
+          for tool in admiral-hook admiral-bridge-mcp; do
+            cp "$BUILT_PRODUCTS_DIR/$tool" "$HELPERS/$tool"
+            codesign --force --sign - "$HELPERS/$tool"
+          done
+          # The `admiral` Claude Code mod; AppModel copies it out to Application Support at
+          # launch (claude writes type files into a --plugin-dir folder, never into the bundle).
+          MOD="$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/admiral-mod"
+          rm -rf "$MOD"
+          mkdir -p "$MOD"
+          rsync -a --exclude '*.test.ts' --exclude '.claude-plugin/types' "$SRCROOT/Mod/admiral/" "$MOD/"
+  admiral-hook:
+    type: tool
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: HookHelper
+    dependencies:
+      - package: AdmiralCore
+        product: AdmiralCore
+    settings:
+      base:
+        PRODUCT_NAME: admiral-hook
+        SWIFT_VERSION: "5.0"
+  admiral-bridge-mcp:
+    type: tool
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: BridgeMCP
+    settings:
+      base:
+        PRODUCT_NAME: admiral-bridge-mcp
+        SWIFT_VERSION: "5.0"
+  AdmiralUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: UITests
+    dependencies:
+      - target: Admiral
+      - package: AdmiralCore
+        product: AdmiralCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pedro.admiral.uitests
+        GENERATE_INFOPLIST_FILE: "YES"
+        SWIFT_VERSION: "5.0"
+        TEST_TARGET_NAME: Admiral
+schemes:
+  Admiral:
+    build:
+      targets:
+        Admiral: all
+        AdmiralUITests: [test]
+    run:
+      config: Debug
+    test:
+      targets:
+        - AdmiralUITests

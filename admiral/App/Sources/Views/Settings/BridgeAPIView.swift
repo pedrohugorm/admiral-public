@@ -1,0 +1,151 @@
+import SwiftUI
+import AdmiralCore
+
+/// Settings → Bridge & API. The API server switch mirrors the sidebar toggle (both read
+/// `model.apiServerPort`, both call `toggleAPIServer`), the port applies live (a running
+/// server restarts on change), and the scratch-tab reaper threshold is re-read every sweep.
+struct BridgeAPIView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var portText = ""
+    @State private var minutesText = ""
+    @State private var copied = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                SettingsCard("API server",
+                             "Loopback HTTP on this port serves **both** the Anthropic-compatible "
+                                + "chat API (`POST /v1/messages`) and operator MCP "
+                                + "(`POST /mcp`). Chat has **no** auth; MCP requires "
+                                + "`Authorization: Bearer` with the operator token (kept in the Keychain; use Copy token). Binds "
+                                + "`127.0.0.1` only. The switch persists across relaunch. If "
+                                + "the port is busy the server falls back to an ephemeral one.") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Serve the API + MCP", isOn: serverBinding)
+                            .toggleStyle(.switch)
+                            .accessibilityIdentifier("settings-api-server-toggle")
+                        SettingsField(label: "Port", text: $portText,
+                                      identifier: "settings-api-server-port", onCommit: commitPort)
+                            .frame(maxWidth: 280)
+                        Text(statusLine)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Theme.secondaryText)
+                            .textSelection(.enabled)
+                            .accessibilityIdentifier("settings-api-server-status")
+                        keychainRow
+                    }
+                }
+
+                SettingsCard("Scratch tabs",
+                             "Small tabs at the bottom of the sidebar, not restored on relaunch. "
+                                + "Sessions created through the API are always scratch tabs; MCP "
+                                + "`commission` and the New form make one on request. A scratch "
+                                + "tab whose goals are all done (or that has none) and that sits "
+                                + "idle — not selected, not busy, no output — this long is closed "
+                                + "automatically (same teardown as Delete). Right-click → Promote "
+                                + "to keep one.") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Close idle scratch tabs automatically", isOn: $model.scratchAutoClose)
+                            .toggleStyle(.switch)
+                            .accessibilityIdentifier("settings-scratch-auto-close")
+                        SettingsField(label: "Idle minutes", text: $minutesText,
+                                      identifier: "settings-scratch-tab-idle", onCommit: commitMinutes)
+                            .frame(maxWidth: 280)
+                            .disabled(!model.scratchAutoClose)
+                        Toggle("New tabs are scratch tabs by default (New form + MCP commission)",
+                               isOn: $model.scratchByDefault)
+                            .toggleStyle(.switch)
+                            .accessibilityIdentifier("settings-scratch-by-default")
+                    }
+                }
+
+                SettingsCard("PHI-redacted output",
+                             "For a tab with an output schema, each round's structured output "
+                                + "(`set_structured_output`) has every string sent to Sonnet with "
+                                + "PHI replaced by [REDACTED], and the session event stream "
+                                + "(`/sessions/<callsign>/events`) sends only that copy as the "
+                                + "`output` event, with `\"redacted\": true`. If Sonnet fails, the "
+                                + "round goes out failed with no result. The screen, the "
+                                + "transcript and the other events keep the full text. One Sonnet "
+                                + "call per string per round, on the tab's own login.") {
+                    Toggle("Redact structured output in the event stream", isOn: $model.redactReplies)
+                        .toggleStyle(.switch)
+                        .accessibilityIdentifier("settings-redact-replies")
+                }
+
+                SettingsCard("Bridge socket",
+                             "The Unix socket serving this instance's bridge (each session's "
+                                + "injected `bridge` MCP relay connects to it). Fixed per "
+                                + "instance/profile — shown for debugging.") {
+                    Text(model.bridgeSocketPath)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Theme.secondaryText)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(20)
+        }
+        .onAppear {
+            portText = String(model.apiServerPreferredPort)
+            minutesText = String(model.scratchTabIdleMinutes)
+        }
+    }
+
+    /// Always rendered: the Keychain status, Recheck, Copy token (clipboard only — the value is
+    /// never displayed) and Rotate. The status line is informational: a legacy token file
+    /// always wins over the Keychain item and is migrated automatically.
+    @ViewBuilder private var keychainRow: some View {
+        let status = model.operatorTokenMirrorStatus
+        Text("Keychain: \(status.label)")
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(Theme.secondaryText)
+            .textSelection(.enabled)
+            .accessibilityIdentifier("settings-operator-mcp-keychain-mirror")
+        HStack(spacing: 8) {
+            Button("Recheck") { model.recheckOperatorToken() }
+                .disabled(status == .checking)
+                .accessibilityIdentifier("settings-operator-mcp-keychain-recheck")
+            Button(copied ? "Copied" : "Copy token") {
+                if model.copyOperatorToken() {
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copied = false }
+                }
+            }
+            .accessibilityIdentifier("settings-operator-mcp-copy")
+            Button("Rotate") { model.rotateOperatorMCPToken() }
+                .disabled(status == .checking)
+                .accessibilityIdentifier("settings-operator-mcp-rotate")
+        }
+    }
+
+    /// The switch mirrors live server state, so a sidebar/palette toggle updates it too.
+    private var serverBinding: Binding<Bool> {
+        Binding(get: { model.apiServerPort != nil }, set: { _ in model.toggleAPIServer() })
+    }
+
+    private var statusLine: String {
+        guard let port = model.apiServerPort else { return "Stopped." }
+        var line = "Serving http://127.0.0.1:\(port)  —  /v1/messages + /mcp"
+        if port != model.apiServerPreferredPort {
+            line += "  — port \(model.apiServerPreferredPort) was busy, using an ephemeral port"
+        }
+        return line
+    }
+
+    /// Invalid input reverts to the stored value rather than silently persisting garbage.
+    private func commitPort() {
+        guard let port = UInt16(portText.trimmingCharacters(in: .whitespaces)), port > 0 else {
+            portText = String(model.apiServerPreferredPort)
+            return
+        }
+        model.apiServerPreferredPort = port  // didSet persists + restarts a running server
+    }
+
+    private func commitMinutes() {
+        guard let minutes = Int(minutesText.trimmingCharacters(in: .whitespaces)), minutes >= 1 else {
+            minutesText = String(model.scratchTabIdleMinutes)
+            return
+        }
+        model.scratchTabIdleMinutes = minutes
+    }
+}

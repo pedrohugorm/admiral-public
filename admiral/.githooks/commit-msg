@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+#
+# Reject a commit whose subject is not a Conventional Commit. scripts/next-version.sh picks the
+# release from these subjects (feat → minor, fix/perf → patch, ! → major), and anything it can't
+# read counts as "no release" — silently. So a fix written as "Fixed the bug" would never ship.
+#
+# Install once per clone:  git config core.hooksPath admiral/.githooks
+#
+set -euo pipefail
+
+SUBJECT="$(grep -v '^#' "$1" | sed -n '/[^[:space:]]/{p;q;}')"
+
+# Messages git writes itself.
+case "$SUBJECT" in
+  "Merge "*|"Revert \""*|"fixup! "*|"squash! "*|"amend! "*) exit 0 ;;
+esac
+
+TYPES='feat|fix|perf|refactor|docs|test|chore|ci|build|style|revert'
+if ! grep -Eq "^($TYPES)(\([^)]+\))?!?: [^[:space:]]" <<<"$SUBJECT"; then
+  cat >&2 <<ERR
+✗ commit subject is not a Conventional Commit:
+    $SUBJECT
+  Use  <type>(<scope>)?!?: <summary>   with type one of: ${TYPES//|/ }
+  e.g. fix(admiral): a long inject arrives whole
+  (feat → minor release, fix/perf → patch, ! → major; the rest release nothing)
+ERR
+  exit 1
+fi

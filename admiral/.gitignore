@@ -1,0 +1,26 @@
+# Build products
+.build/
+App/build/
+App/build-release/
+
+# Validation artifacts (logs); the UI snapshot is committed as the README image
+.validation/*.log
+.validation/ui_live.png
+
+# Generated Xcode project (source of truth is App/project.yml)
+App/Admiral.xcodeproj/
+
+# SwiftPM
+.swiftpm/
+Package.resolved
+
+.DS_Store
+.validation/*.png
+scratch/mlxspike
+App/Resources/Qwen3-1.7B-4bit/
+
+# Local scratch (screen dumps, probe output)
+.tmp/
+
+# Developer ID provisioning profile — per Mac, like the signing cert (docs/signing.md)
+App/Admiral.provisionprofile

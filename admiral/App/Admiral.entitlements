@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Claimed only when scripts/sign-app.sh embeds a provisioning profile that authorizes them:
+	     macOS refuses to run code that claims these without one. keychain-access-groups moves
+	     Admiral's secrets into the data-protection keychain (AdmiralCore/Support/Keychain.swift).
+	     __TEAM_ID__ is a template: sign-app.sh fills it with the team id read from the profile. -->
+	<key>com.apple.application-identifier</key>
+	<string>__TEAM_ID__.com.pedro.admiral</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>__TEAM_ID__</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>__TEAM_ID__.com.pedro.admiral</string>
+	</array>
+</dict>
+</plist>
