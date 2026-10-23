@@ -15,7 +15,8 @@ public struct HTTPRequest: Sendable {
     public var looksBrowserOriginated: Bool {
         if let origin = headers["origin"], !origin.isEmpty { return true }
         if let host = headers["host"], !host.isEmpty {
-            if !Self.allowedLoopbackHosts.contains(Self.hostWithoutPort(host)) { return true }
+            let name = Self.hostWithoutPort(host).lowercased()
+            if !Self.allowedLoopbackHosts.contains(name), !TrustedHosts.contains(name) { return true }
         }
         return false
     }
@@ -24,7 +25,7 @@ public struct HTTPRequest: Sendable {
 
     /// Strip a trailing `:port` from a `Host` header value, preserving the
     /// bracket form of an IPv6 literal (e.g. `[::1]:4141` -> `[::1]`).
-    private static func hostWithoutPort(_ host: String) -> String {
+    static func hostWithoutPort(_ host: String) -> String {
         if host.hasPrefix("["), let bracketEnd = host.firstIndex(of: "]") {
             return String(host[...bracketEnd])
         }
@@ -32,6 +33,36 @@ public struct HTTPRequest: Sendable {
             return String(host[..<colon])
         }
         return host
+    }
+}
+
+/// Extra `Host` names the loopback server accepts beyond 127.0.0.1, localhost and [::1] —
+/// e.g. `host.docker.internal`, which Docker Desktop delivers to the host loopback with the
+/// client's own `Host` header intact (Settings → Bridge & API). Empty by default. Read on
+/// every request, so an edit applies at once.
+public enum TrustedHosts {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var names: Set<String> = []
+
+    /// Replace the list. Accepts a comma/space/newline-separated string; entries are
+    /// lowercased, any `:port` is dropped, blanks are ignored.
+    public static func set(_ text: String) {
+        let parsed = parse(text)
+        lock.lock(); defer { lock.unlock() }
+        names = parsed
+    }
+
+    public static func contains(_ host: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return names.contains(host)
+    }
+
+    static func parse(_ text: String) -> Set<String> {
+        let separators = CharacterSet(charactersIn: ", \t\n")
+        return Set(text.components(separatedBy: separators)
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            .filter { !$0.isEmpty }
+            .map { HTTPRequest.hostWithoutPort($0) })
     }
 }
 

@@ -299,6 +299,21 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Extra `Host` names the API server trusts (Settings → Bridge & API), comma-separated.
+    /// Docker Desktop clients reach the host loopback as `host.docker.internal`. Applied to
+    /// `TrustedHosts` at once; empty by default.
+    static let trustedHostsKey = "admiral.trustedHosts"
+    @Published var trustedHosts: String = {
+        let stored = UserDefaults.standard.string(forKey: AppModel.trustedHostsKey) ?? ""
+        TrustedHosts.set(stored)
+        return stored
+    }() {
+        didSet {
+            UserDefaults.standard.set(trustedHosts, forKey: Self.trustedHostsKey)
+            TrustedHosts.set(trustedHosts)
+        }
+    }
+
     func toggleAPIServer() {
         guard config.features.apiServer else { return }
         let enable = apiServerPort == nil

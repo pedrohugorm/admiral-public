@@ -8,6 +8,7 @@ struct BridgeAPIView: View {
     @EnvironmentObject private var model: AppModel
     @State private var portText = ""
     @State private var minutesText = ""
+    @State private var hostsText = ""
     @State private var copied = false
 
     var body: some View {
@@ -38,6 +39,18 @@ struct BridgeAPIView: View {
                             .accessibilityIdentifier("settings-api-server-status")
                         keychainRow
                     }
+                }
+
+                SettingsCard("Trusted hosts",
+                             "Extra `Host` names the API + MCP server accepts besides `127.0.0.1`, "
+                                + "`localhost` and `[::1]`, comma-separated. A client in Docker "
+                                + "Desktop reaches this server as `host.docker.internal`, which is "
+                                + "otherwise refused as a browser request. The token is still "
+                                + "required, and a request with an `Origin` header is still refused.") {
+                    SettingsField(label: "Hosts", text: $hostsText,
+                                  identifier: "settings-trusted-hosts",
+                                  onCommit: { model.trustedHosts = hostsText })
+                        .frame(maxWidth: 420)
                 }
 
                 SettingsCard("Scratch tabs",
@@ -92,6 +105,7 @@ struct BridgeAPIView: View {
         .onAppear {
             portText = String(model.apiServerPreferredPort)
             minutesText = String(model.scratchTabIdleMinutes)
+            hostsText = model.trustedHosts
         }
     }
 
