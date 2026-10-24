@@ -34,6 +34,7 @@ struct SettingsField: View {
     @Binding var text: String
     let identifier: String
     let onCommit: () -> Void
+    @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -42,7 +43,11 @@ struct SettingsField: View {
             TextField("", text: $text)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
+                .focused($focused)
                 .onSubmit(onCommit)
+                // Clicking away, switching tabs or closing the window must not drop the edit.
+                .onChange(of: focused) { _, isFocused in if !isFocused { onCommit() } }
+                .onDisappear(perform: onCommit)
                 .accessibilityIdentifier(identifier)
         }
     }

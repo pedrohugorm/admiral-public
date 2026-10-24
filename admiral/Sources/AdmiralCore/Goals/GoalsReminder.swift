@@ -22,6 +22,12 @@ public enum GoalsReminder {
         return "⚑ Goals \(met)/\(total) — still open: \(ids)"
     }
 
+    /// The one exception, the same wording on every prompt. A request that changes anything is
+    /// never a skip; "nothing to track" was a judgment call models made too often.
+    static let skipRule = "Skip only if this prompt is a pure question or chat and you will "
+        + "edit, run, send or ship nothing for it. Any request that does is not a skip: set "
+        + "goals first. If you skip, say nothing about it."
+
     /// The instruction the model acts on. Every prompt gets one: with goals open it is a
     /// reminder to resolve them, and without it is a prompt to set some — a session that
     /// never set goals is exactly the one that most needs asking.
@@ -30,11 +36,10 @@ public enum GoalsReminder {
             // Once every goal is met, the next request gets goals before anything else, and
             // only a pure question or chat may skip them. A session that never set goals keeps
             // the one-off opt-out.
-            let (headline, optOut) = goals?.visible.isEmpty == false
-                ? ("every goal is met. Before you do anything else, call `set_goal_self` with the goals for this request.",
-                   "Skip only if this prompt is a pure question or chat with no work to verify. If you skip, say nothing about it.")
-                : ("set goals for this session.",
-                   "If the request is a one-off with nothing to track, carry on without setting any — do not mention this to the user.")
+            let headline = goals?.visible.isEmpty == false
+                ? "every goal is met. Before you do anything else, call `set_goal_self` with the goals for this request."
+                : "set goals for this session. Before you do anything else, call `set_goal_self` with the goals for this request."
+            let optOut = skipRule
             return """
                 ADMIRAL GOALS — \(headline)
                 Set them with `set_goal_self` (admiral bridge MCP): the OUTCOMES this \
@@ -66,13 +71,9 @@ public enum GoalsReminder {
     /// re-lists them); without, a prompt may be the first with work in it, so a line still asks.
     public static func followUp(for goals: SessionGoals?) -> String? {
         guard let goals, !goals.outstanding.isEmpty else {
-            return goals?.visible.isEmpty == false
-                ? "ADMIRAL GOALS — every goal is met. If this request has work to verify, call "
-                    + "`set_goal_self` before anything else, as described earlier; if it is a "
-                    + "pure question or chat, carry on and say nothing about it."
-                : "ADMIRAL GOALS — none set. If this request has work to verify, set them with "
-                    + "`set_goal_self` as described earlier; otherwise carry on and say nothing "
-                    + "about it."
+            let state = goals?.visible.isEmpty == false ? "every goal is met" : "none set"
+            return "ADMIRAL GOALS — \(state). Call `set_goal_self` before anything else, as "
+                + "described earlier. " + skipRule
         }
         return nil
     }

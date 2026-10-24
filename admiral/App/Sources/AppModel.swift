@@ -299,12 +299,14 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Extra `Host` names the API server trusts (Settings → Bridge & API), comma-separated.
-    /// Docker Desktop clients reach the host loopback as `host.docker.internal`. Applied to
-    /// `TrustedHosts` at once; empty by default.
+    /// Extra `Host` names the API server trusts (Settings → Bridge & API). Docker Desktop
+    /// clients reach the host loopback as `host.docker.internal`. Stored as a string array and
+    /// applied to `TrustedHosts` on every change; empty by default. An older comma-separated
+    /// string (or one written with `defaults write -string`) is read once and rewritten.
     static let trustedHostsKey = "admiral.trustedHosts"
-    @Published var trustedHosts: String = {
-        let stored = UserDefaults.standard.string(forKey: AppModel.trustedHostsKey) ?? ""
+    @Published var trustedHosts: [String] = {
+        let stored = TrustedHosts.migrate(stored: UserDefaults.standard.object(forKey: AppModel.trustedHostsKey))
+        UserDefaults.standard.set(stored, forKey: AppModel.trustedHostsKey)
         TrustedHosts.set(stored)
         return stored
     }() {
@@ -312,6 +314,20 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.set(trustedHosts, forKey: Self.trustedHostsKey)
             TrustedHosts.set(trustedHosts)
         }
+    }
+
+    /// Group chat: an untagged message goes to the members a model scores at or above the
+    /// threshold, or to the highest scorer (Settings → Bridge & API). Off = every member.
+    static let groupRelevanceEnabledKey = "admiral.groupRelevanceEnabled"
+    @Published var groupRelevanceEnabled: Bool =
+        UserDefaults.standard.object(forKey: AppModel.groupRelevanceEnabledKey) as? Bool ?? true {
+        didSet { UserDefaults.standard.set(groupRelevanceEnabled, forKey: Self.groupRelevanceEnabledKey) }
+    }
+    static let groupRelevanceThresholdKey = "admiral.groupRelevanceThreshold"
+    @Published var groupRelevanceThreshold: Double =
+        UserDefaults.standard.object(forKey: AppModel.groupRelevanceThresholdKey) as? Double
+            ?? GroupRelevance.defaultThreshold {
+        didSet { UserDefaults.standard.set(groupRelevanceThreshold, forKey: Self.groupRelevanceThresholdKey) }
     }
 
     func toggleAPIServer() {
@@ -391,8 +407,9 @@ final class AppModel: ObservableObject {
     /// Keychain access prompt — meanwhile the API server keeps serving the file value. If the wait
     /// still expires, a timed-out resolution is retried every 15 s for ~5 min (the user clicking
     /// Allow late), plus the Recheck button.
-    private let operatorTokenMirror = GuardedOperatorTokenMirror(
-        wrapping: KeychainOperatorTokenMirror(), timeout: OperatorTokenStore.steadyTimeout)
+    /// Scoped to the isolation profile (`token.<profile>`), so a test or second instance can
+    /// never touch the main instance's token. Built in `init` once the profile is known.
+    private let operatorTokenMirror: GuardedOperatorTokenMirror
     private let operatorTokenQueue = DispatchQueue(label: "admiral.operator-token", qos: .utility)
     @Published private(set) var operatorTokenMirrorStatus: OperatorTokenMirrorStatus = .checking
     private let operatorTokenRetryPolicy = OperatorTokenRetryPolicy()
@@ -641,6 +658,9 @@ final class AppModel: ObservableObject {
             .trimmingCharacters(in: .whitespaces)
             .filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
         self.profile = (profile?.isEmpty ?? true) ? nil : profile
+        self.operatorTokenMirror = GuardedOperatorTokenMirror(
+            wrapping: KeychainOperatorTokenMirror(profile: self.profile),
+            timeout: OperatorTokenStore.steadyTimeout)
         let storeDefaults: UserDefaults = self.profile
             .flatMap { UserDefaults(suiteName: "com.pedro.admiral.\($0)") } ?? .standard
         let launchStore = LaunchOptionsStore(defaults: storeDefaults)

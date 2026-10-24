@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Persistent bearer token for the operator MCP HTTP surface (`POST /mcp`,
@@ -17,7 +18,9 @@ import Foundation
 /// |-------------|---------------------|----------------------------------------------------------|
 /// | exists      | anything            | `migrateLegacyTokenFile`: the FILE value wins (below)    |
 /// | missing     | well-formed         | serve the Keychain value                                 |
-/// | missing     | missing / malformed | mint a new token, store it in the Keychain **only**      |
+/// | missing     | missing / malformed | FIRST RUN (no `operator-token-issued` marker): mint a    |
+/// |             |                     | token, store it in the Keychain **only**. Marker present: |
+/// |             |                     | never mint — status `.tokenLost`, Rotate issues a new one |
 /// | missing     | timeout / error     | no token yet (`""`); the caller serves an in-memory one  |
 ///
 /// All Keychain access goes through mirrors that callers bound with `GuardedOperatorTokenMirror`;
@@ -83,10 +86,18 @@ public enum OperatorTokenStore {
         if let moveFailure { return Resolution(token: "", mirror: status(for: moveFailure)) }
         switch readMirror(mirror) {
         case let .value(k) where isWellFormed(k):
+            noteIssued(k, base: base)
             return Resolution(token: k, mirror: .inSync)
         case .value, .missing:
-            // Missing, or an unusable (malformed/empty) item no legacy file can replace: mint.
-            return storeMinted(patient)
+            // A token was issued before, so a missing one means the store lost it (another
+            // build's keychain, a deleted item): minting would silently break every client that
+            // holds the old copy. Only a first run mints without being asked.
+            if wasIssued(base: base) {
+                NSLog("OperatorTokenStore: Keychain has no token but one was issued before (%@); not minting — Rotate to issue a new one",
+                      issuedHash(base: base) ?? "?")
+                return Resolution(token: "", mirror: .tokenLost)
+            }
+            return storeMinted(patient, base: base, reason: "first run")
         case let .failed(timedOut):
             // Unknown Keychain state: never mint over what we could not read.
             return Resolution(token: "", mirror: timedOut ? .timedOut : .unavailable)
@@ -96,7 +107,7 @@ public enum OperatorTokenStore {
     /// Rotate: a fresh token into the Keychain ONLY (verified by read-back). On any failure
     /// nothing changes (`token == ""`). A legacy file, if one still exists, is superseded.
     public static func rotateToken(base: URL, mirror: OperatorTokenMirror?) -> Resolution {
-        let r = storeMinted(mirror)
+        let r = storeMinted(mirror, base: base, reason: "Rotate pressed")
         guard !r.token.isEmpty else { return r }
         supersedeLegacyFile(base: base, with: r.token, mirror: mirror)
         return r
@@ -133,6 +144,7 @@ public enum OperatorTokenStore {
         guard let f = fileToken(base: base) else { return nil }
         func settle(_ k: String) -> Resolution {
             guard k == f else { return Resolution(token: f, mirror: .outOfSync) }
+            noteIssued(f, base: base)
             removeLegacyFile(base: base, expected: f, verifiedKeychainValue: k)
             return Resolution(token: f, mirror: .inSync)
         }
@@ -217,7 +229,7 @@ public enum OperatorTokenStore {
     }
 
     /// Mint, write to the Keychain, and verify by reading back. `token == ""` on any failure.
-    private static func storeMinted(_ mirror: OperatorTokenMirror?) -> Resolution {
+    private static func storeMinted(_ mirror: OperatorTokenMirror?, base: URL, reason: String) -> Resolution {
         guard let mirror else { return Resolution(token: "", mirror: .unavailable) }
         let minted = mint()
         do { try mirror.write(minted) } catch {
@@ -225,11 +237,42 @@ public enum OperatorTokenStore {
             return Resolution(token: "", mirror: status(for: error))
         }
         switch readMirror(mirror) {
-        case let .value(k) where k == minted: return Resolution(token: minted, mirror: .inSync)
+        case let .value(k) where k == minted:
+            NSLog("OperatorTokenStore: new token issued (%@), id %@", reason, hashPrefix(minted))
+            noteIssued(minted, base: base)
+            return Resolution(token: minted, mirror: .inSync)
         case .value: return Resolution(token: "", mirror: .outOfSync)
         case let .failed(timedOut): return Resolution(token: "", mirror: timedOut ? .timedOut : .unavailable)
         case .missing: return Resolution(token: "", mirror: .unavailable)
         }
+    }
+
+    // MARK: - Issued marker
+
+    /// Non-secret record that a token was issued for this support dir: the first 12 hex digits
+    /// of its SHA-256. It outlives the Keychain item, which is the whole point.
+    public static let issuedMarkerName = "operator-token-issued"
+
+    static func issuedMarker(base: URL) -> URL { base.appendingPathComponent(issuedMarkerName) }
+
+    static func hashPrefix(_ token: String) -> String {
+        SHA256.hash(data: Data(token.utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func wasIssued(base: URL) -> Bool {
+        FileManager.default.fileExists(atPath: issuedMarker(base: base).path)
+    }
+
+    static func issuedHash(base: URL) -> String? {
+        (try? String(contentsOf: issuedMarker(base: base), encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Record `token` as the issued one (also backfills an install that predates the marker).
+    static func noteIssued(_ token: String, base: URL) {
+        let hash = hashPrefix(token)
+        guard issuedHash(base: base) != hash else { return }
+        try? Data(hash.utf8).write(to: issuedMarker(base: base), options: .atomic)
     }
 
     private static func status(for error: Error) -> OperatorTokenMirrorStatus {

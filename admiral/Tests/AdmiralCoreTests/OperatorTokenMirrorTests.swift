@@ -81,8 +81,11 @@ final class OperatorTokenMirrorTests: XCTestCase {
     private func writeLegacy(_ v: String) throws {
         try v.write(to: legacy, atomically: true, encoding: .utf8)
     }
+    /// The token files in the dir. The non-secret issued marker (a hash prefix) is expected and
+    /// is not a token file, so it is left out.
     private var dirListing: [String] {
-        ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).sorted()
+        ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+            .filter { $0 != OperatorTokenStore.issuedMarkerName }.sorted()
     }
 
     func testWellFormed() {

@@ -32,6 +32,10 @@ extension AppModel {
                                             since: since)
         }
         groupService.enabled = { [weak self] in self?.groupsEnabled ?? false }
+        let claude = Self.resolveClaude()
+        groupService.scoreRelevance = { prompt in await GroupRelevanceScorer.score(prompt: prompt, claude: claude) }
+        groupService.relevanceEnabled = { [weak self] in self?.groupRelevanceEnabled ?? true }
+        groupService.relevanceThreshold = { [weak self] in self?.groupRelevanceThreshold ?? GroupRelevance.defaultThreshold }
         sessions.onDelete = { [weak self] session in self?.groupStore.removeSession(session.stableKey) }
         applyGroupsFlag()
     }

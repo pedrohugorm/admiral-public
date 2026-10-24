@@ -74,15 +74,26 @@ final class GoalsReminderTests: XCTestCase {
         let met = GoalsReminder.context(for: goals(["done"], done: ["g1"]))
         XCTAssertTrue(met.hasPrefix("ADMIRAL GOALS — every goal is met. Before you do anything else, "
                                     + "call `set_goal_self` with the goals for this request.\n"), met)
-        XCTAssertTrue(met.hasSuffix("lets it stop. Skip only if this prompt is a pure question or chat "
-                                    + "with no work to verify. If you skip, say nothing about it."), met)
+        XCTAssertTrue(met.hasSuffix("lets it stop. " + GoalsReminder.skipRule), met)
         XCTAssertFalse(met.contains("set the next ones"), met)
         XCTAssertFalse(met.contains("one-off"), met)
 
+        // A session that never set goals gets the same narrow exception, not a "one-off" opt-out.
         let never = GoalsReminder.context(for: nil)
-        XCTAssertTrue(never.hasSuffix("If the request is a one-off with nothing to track, carry on "
-                                      + "without setting any — do not mention this to the user."), never)
-        XCTAssertFalse(never.contains("Skip only if"), never)
+        XCTAssertTrue(never.hasPrefix("ADMIRAL GOALS — set goals for this session. Before you do anything "
+                                      + "else, call `set_goal_self`"), never)
+        XCTAssertTrue(never.hasSuffix("lets it stop. " + GoalsReminder.skipRule), never)
+        XCTAssertFalse(never.contains("one-off"), never)
+        XCTAssertFalse(never.contains("nothing to track"), never)
+    }
+
+    /// The per-prompt line carries the same rule, so the exception cannot widen after the first.
+    func testFollowUpCarriesTheSameNarrowExemption() throws {
+        for state in [nil, goals(["done"], done: ["g1"])] {
+            let line = try XCTUnwrap(GoalsReminder.followUp(for: state))
+            XCTAssertTrue(line.hasSuffix(GoalsReminder.skipRule), line)
+            XCTAssertFalse(line.contains("otherwise carry on"), line)
+        }
     }
 
     // MARK: - Through the hook

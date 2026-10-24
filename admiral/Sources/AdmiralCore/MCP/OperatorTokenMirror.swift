@@ -39,6 +39,9 @@ public enum OperatorTokenMirrorStatus: Equatable, Sendable {
     /// The Keychain read-back did not equal the value just written (the legacy file, if any, is kept
     /// and its value is served). Informational; Recheck retries.
     case outOfSync
+    /// A token was issued before (the marker file says so) but the Keychain has none now. Nothing
+    /// was minted, so no client's copy was invalidated; Rotate issues a new one on purpose.
+    case tokenLost
     /// Keychain call failed.
     case unavailable
     /// Keychain call did not return in time (usually an unanswered access prompt).
@@ -49,6 +52,7 @@ public enum OperatorTokenMirrorStatus: Equatable, Sendable {
         case .checking: "checking…"
         case .inSync: "in sync"
         case .outOfSync: "out of sync (file value in use)"
+        case .tokenLost: "token missing from the Keychain — press Rotate to issue a new one (update clients)"
         case .unavailable: "unavailable (error)"
         case .timedOut: "unavailable (timeout)"
         }
@@ -148,9 +152,18 @@ public final class KeychainOperatorTokenMirror: OperatorTokenMirror {
     public static let service = "com.pedro.admiral.operator-mcp"
     public static let account = "token"
 
-    public init() {}
+    /// `token` for the default profile, `token.<profile>` for any other, so a test or second
+    /// profile can never mint, rotate or delete the main instance's token.
+    public static func account(profile: String?) -> String {
+        guard let profile, !profile.isEmpty else { return account }
+        return account + "." + profile
+    }
 
-    private var base: [String: Any] { Keychain.query(service: Self.service, account: Self.account) }
+    private let itemAccount: String
+
+    public init(profile: String? = nil) { itemAccount = Self.account(profile: profile) }
+
+    private var base: [String: Any] { Keychain.query(service: Self.service, account: itemAccount) }
 
     public func read() throws -> String? {
         var query = base
@@ -189,7 +202,7 @@ public final class KeychainOperatorTokenMirror: OperatorTokenMirror {
     }
 
     public func moveFromLoginKeychain() throws -> Bool {
-        do { return try Keychain.moveFromLoginKeychain(service: Self.service, account: Self.account) }
+        do { return try Keychain.moveFromLoginKeychain(service: Self.service, account: itemAccount) }
         catch let e as KeychainError { throw OperatorTokenMirrorError(status: e.status) }
     }
 }

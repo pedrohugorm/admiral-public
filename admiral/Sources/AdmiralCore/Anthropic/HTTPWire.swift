@@ -57,6 +57,62 @@ public enum TrustedHosts {
         return names.contains(host)
     }
 
+    /// Replace the list from an array of already-validated names.
+    public static func set(_ list: [String]) { set(list.joined(separator: ",")) }
+
+    public static let builtIn = ["127.0.0.1", "localhost", "[::1]"]
+    public static let dockerDesktop = "host.docker.internal"
+
+    public enum Invalid: Error, Equatable, Sendable {
+        case empty, notABareHost, duplicate, builtIn
+
+        public var message: String {
+            switch self {
+            case .empty: "Enter a hostname or IP."
+            case .notABareHost: "Use a bare hostname or IP: no scheme, path, port or spaces."
+            case .duplicate: "Already in the list."
+            case .builtIn: "Always accepted; no need to add it."
+            }
+        }
+    }
+
+    /// `entry` as it is stored (trimmed, lowercased), or why it cannot be added. A bare hostname
+    /// (letters, digits, `-`, `.`) or IPv4 address, or a bracketed IPv6 literal.
+    public static func validate(_ entry: String, existing: [String]) -> Result<String, Invalid> {
+        let name = entry.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !name.isEmpty else { return .failure(.empty) }
+        let bareHost = name.range(of: #"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"#, options: .regularExpression) != nil
+        let ipv6 = name.range(of: #"^\[[0-9a-f:.]+\]$"#, options: .regularExpression) != nil
+        guard bareHost || ipv6 else { return .failure(.notABareHost) }
+        guard !builtIn.contains(name) else { return .failure(.builtIn) }
+        guard !existing.contains(name) else { return .failure(.duplicate) }
+        return .success(name)
+    }
+
+    /// The stored list from whatever `admiral.trustedHosts` holds: an array (current), or the
+    /// comma-separated string an older build or `defaults write -string` left. Invalid and
+    /// duplicate entries are dropped.
+    public static func migrate(stored: Any?) -> [String] {
+        let raw: [String]
+        switch stored {
+        case let list as [String]: raw = list
+        case let text as String: raw = parseOrdered(text)
+        default: raw = []
+        }
+        var kept: [String] = []
+        for entry in raw {
+            if case .success(let name) = validate(entry, existing: kept) { kept.append(name) }
+        }
+        return kept
+    }
+
+    private static func parseOrdered(_ text: String) -> [String] {
+        let separators = CharacterSet(charactersIn: ", \t\n")
+        return text.components(separatedBy: separators)
+            .map { HTTPRequest.hostWithoutPort($0.trimmingCharacters(in: .whitespaces).lowercased()) }
+            .filter { !$0.isEmpty }
+    }
+
     static func parse(_ text: String) -> Set<String> {
         let separators = CharacterSet(charactersIn: ", \t\n")
         return Set(text.components(separatedBy: separators)

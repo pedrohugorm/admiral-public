@@ -32,6 +32,9 @@ public struct GroupPostResult: Equatable, Sendable {
     public var woken: [String] = []
     public var queued: [String] = []
     public var unreachable: [String] = []
+    /// Members being scored for an untagged message; the ones it is for are woken once the
+    /// scores are in (`GroupRelevance`).
+    public var scoring: [String] = []
     /// The budget was already used, so nobody was woken.
     public var paused = false
 
@@ -40,6 +43,7 @@ public struct GroupPostResult: Equatable, Sendable {
         if passed { return "passed (not logged)" }
         var parts = ["posted"]
         if !woken.isEmpty { parts.append("woke " + woken.map { "@\($0)" }.joined(separator: ", ")) }
+        if !scoring.isEmpty { parts.append("untagged, scoring relevance for " + scoring.map { "@\($0)" }.joined(separator: ", ")) }
         if !queued.isEmpty { parts.append("queued, could not be typed to yet: " + queued.map { "@\($0)" }.joined(separator: ", ")) }
         if !unreachable.isEmpty { parts.append("not running: " + unreachable.map { "@\($0)" }.joined(separator: ", ")) }
         if paused { parts.append("group paused, nobody woken until the user replies or continues") }
@@ -63,6 +67,14 @@ public final class GroupService {
     /// the tab's chat ledger (`GroupAutoPost.finalReply`).
     public var finalReply: (_ member: UUID, _ since: Date) -> String? = { _, _ in nil }
     public var now: () -> Date = Date.init
+
+    /// Scores one `GroupRelevance.prompt`: 0...1, or nil when the scorer failed. With no scorer
+    /// (or `relevanceEnabled` false) an untagged message goes to every member.
+    public var scoreRelevance: (@Sendable (String) async -> Double?)?
+    public var relevanceEnabled: () -> Bool = { true }
+    public var relevanceThreshold: () -> Double = { GroupRelevance.defaultThreshold }
+    /// The scoring of the latest untagged message; tests await it.
+    public private(set) var relevanceTask: Task<Void, Never>?
 
     /// Busy members holding one wake per group, delivered when they go idle.
     private var pending: [UUID: [UUID]] = [:]
@@ -126,6 +138,7 @@ public final class GroupService {
         everyone = everyone || parsed.all
         for id in parsed.ids where !ids.contains(id) { ids.append(id) }
         let target: GroupMessage.Target = everyone || ids.isEmpty ? .everyone : .members(ids)
+        let untagged = !everyone && ids.isEmpty
 
         // A human message restarts the budget; an agent message is allowed to wake others only
         // while budget remains, and spends one either way.
@@ -149,12 +162,44 @@ public final class GroupService {
                                         sender: senderID, target: target,
                                         paused: wasPaused, status: { byID[$0]?.status ?? .unknown })
         func name(_ id: UUID) -> String { byID[id]?.callsign ?? id.uuidString }
-        for id in routing.wake {
-            if wake(id, in: group.id) { result.woken.append(name(id)) }
-            else { hold(id, in: group.id); result.queued.append(name(id)) }
+        if untagged, relevanceEnabled(), let scorer = scoreRelevance, !routing.wake.isEmpty {
+            result.scoring = routing.wake.map(name)
+            score(routing.wake, for: message, in: group, sender: sender, scorer: scorer)
+        } else {
+            for id in routing.wake {
+                if wake(id, in: group.id) { result.woken.append(name(id)) }
+                else { hold(id, in: group.id); result.queued.append(name(id)) }
+            }
         }
         result.unreachable = routing.unreachable.map(name)
         return .success(result)
+    }
+
+    /// Scores `candidates` for an untagged `message`, then wakes the ones it is for (held if
+    /// they cannot be typed to yet). The message is already logged; a member it does not reach
+    /// reads it with its next prompt.
+    private func score(_ candidates: [UUID], for message: GroupMessage, in group: ChatGroup,
+                       sender: GroupSender, scorer: @escaping @Sendable (String) async -> Double?) {
+        let byKey = Dictionary(peers().map { ($0.id, $0.callsign) }, uniquingKeysWith: { a, _ in a })
+        let log = store.messages(group.id).filter { $0.seq <= message.seq }
+        let prompts = candidates.map {
+            ($0, GroupRelevance.prompt(group: group.name, callsign: byKey[$0] ?? "?", log: log, names: byKey))
+        }
+        let fromHuman = message.isHuman
+        let threshold = relevanceThreshold()
+        relevanceTask = Task { @MainActor [weak self] in
+            var scores: [UUID: Double] = [:]
+            await withTaskGroup(of: (UUID, Double?).self) { tasks in
+                for (id, prompt) in prompts { tasks.addTask { (id, await scorer(prompt)) } }
+                for await (id, score) in tasks { if let score { scores[id] = score } }
+            }
+            guard let self, self.enabled(), let current = self.store.group(group.id), !current.isPaused else { return }
+            let chosen = GroupRelevance.select(candidates: candidates, scores: scores,
+                                               threshold: threshold, fromHuman: fromHuman)
+            for id in chosen where current.members.contains(id) {
+                if !self.wake(id, in: group.id) { self.hold(id, in: group.id) }
+            }
+        }
     }
 
     /// The user answered `member`'s question in the group window, and the answer is being typed

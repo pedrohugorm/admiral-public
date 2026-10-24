@@ -8,7 +8,7 @@ struct BridgeAPIView: View {
     @EnvironmentObject private var model: AppModel
     @State private var portText = ""
     @State private var minutesText = ""
-    @State private var hostsText = ""
+    @State private var thresholdText = ""
     @State private var copied = false
 
     var body: some View {
@@ -42,15 +42,33 @@ struct BridgeAPIView: View {
                 }
 
                 SettingsCard("Trusted hosts",
-                             "Extra `Host` names the API + MCP server accepts besides `127.0.0.1`, "
-                                + "`localhost` and `[::1]`, comma-separated. A client in Docker "
-                                + "Desktop reaches this server as `host.docker.internal`, which is "
-                                + "otherwise refused as a browser request. The token is still "
-                                + "required, and a request with an `Origin` header is still refused.") {
-                    SettingsField(label: "Hosts", text: $hostsText,
-                                  identifier: "settings-trusted-hosts",
-                                  onCommit: { model.trustedHosts = hostsText })
-                        .frame(maxWidth: 420)
+                             "Extra `Host` names the API + MCP server accepts besides the built-in "
+                                + "ones. A client in Docker Desktop reaches this server as "
+                                + "`host.docker.internal`, which is otherwise refused as a browser "
+                                + "request. Changes apply at once. The token is still required, and "
+                                + "a request with an `Origin` header is still refused.") {
+                    TrustedHostsList()
+                }
+
+                SettingsCard("Group chat routing",
+                             "A group message that tags nobody is scored 0 to 1 for each other "
+                                + "member by a small model (haiku, on your login) reading the "
+                                + "recent conversation. It reaches every member at or above the "
+                                + "threshold, or the single highest scorer when none reaches it. "
+                                + "Members it skips read it with their next prompt. If scoring "
+                                + "fails, your message reaches everyone and an agent's reaches "
+                                + "nobody. Off = untagged goes to everyone. `@name` and `@all` "
+                                + "are never scored.") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Score untagged group messages", isOn: $model.groupRelevanceEnabled)
+                            .toggleStyle(.switch)
+                            .accessibilityIdentifier("settings-group-relevance")
+                        SettingsField(label: "Threshold (0–1)", text: $thresholdText,
+                                      identifier: "settings-group-relevance-threshold",
+                                      onCommit: commitThreshold)
+                            .frame(maxWidth: 280)
+                            .disabled(!model.groupRelevanceEnabled)
+                    }
                 }
 
                 SettingsCard("Scratch tabs",
@@ -105,7 +123,7 @@ struct BridgeAPIView: View {
         .onAppear {
             portText = String(model.apiServerPreferredPort)
             minutesText = String(model.scratchTabIdleMinutes)
-            hostsText = model.trustedHosts
+            thresholdText = String(model.groupRelevanceThreshold)
         }
     }
 
@@ -157,6 +175,14 @@ struct BridgeAPIView: View {
             return
         }
         model.apiServerPreferredPort = port  // didSet persists + restarts a running server
+    }
+
+    private func commitThreshold() {
+        guard let value = Double(thresholdText.trimmingCharacters(in: .whitespaces)), (0...1).contains(value) else {
+            thresholdText = String(model.groupRelevanceThreshold)
+            return
+        }
+        model.groupRelevanceThreshold = value
     }
 
     private func commitMinutes() {
