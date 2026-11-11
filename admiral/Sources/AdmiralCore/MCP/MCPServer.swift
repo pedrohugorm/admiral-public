@@ -210,6 +210,9 @@ public struct MCPServer {
              + "'GLM5.3 via Fireworks AI') so the tab uses that custom model instead of "
              + "stock Anthropic. Omit `provider` for stock. Unknown provider names fail. "
              + "Use commission_bash for a plain zsh tab with no claude. "
+             + "Called from an ACP agent's tab, the new tab runs on that SAME agent instead: "
+             + "`cwd` is a path in the agent's environment (checked there), and `provider` "
+             + "is refused. "
              + "Optional `scratch`: true makes it a scratch tab — a small row at the bottom of "
              + "the sidebar, not restored on relaunch, and closed automatically once it sits "
              + "idle with no open goals; the user can promote it to a permanent tab. Omit "
@@ -421,13 +424,47 @@ public struct MCPServer {
             let args = params["arguments"] as? [String: Any] ?? [:]
             let outcome = refusal(of: name, args: args, for: caller)
                 ?? call(name: name, args: args, token: caller.bridgeToken)
-            return Self.result(id: id, value: [
-                "content": [["type": "text", "text": outcome.message]],
-                "isError": !outcome.ok,
-            ])
+            return Self.toolResult(id: id, outcome)
         default:
             return Self.error(id: id, code: -32601, message: "method not found: \(method)")
         }
+    }
+
+    /// `handle(requestData:caller:)` for a transport that can wait: the same answers, except
+    /// that `commission` goes through `BridgeCore.commissionAsync`, whose cwd check in an ACP
+    /// agent's environment runs off the main actor. The session bridge uses this; the Unix
+    /// socket (PTY tabs) keeps the synchronous path, which refuses an ACP caller's commission.
+    public func handleAsync(requestData: Data, caller: MCPCaller) async -> Data {
+        guard let obj = try? JSONSerialization.jsonObject(with: requestData) as? [String: Any],
+              let id = obj["id"], obj["method"] as? String == "tools/call",
+              let params = obj["params"] as? [String: Any], params["name"] as? String == "commission"
+        else { return handle(requestData: requestData, caller: caller) }
+        let args = params["arguments"] as? [String: Any] ?? [:]
+        if let refused = refusal(of: "commission", args: args, for: caller) {
+            return Self.toolResult(id: id, refused)
+        }
+        let a = Self.commissionArguments(args)
+        let outcome = await bridge.commissionAsync(
+            callsign: a.callsign, cwd: a.cwd, provider: a.provider, scratch: a.scratch,
+            outputSchema: a.outputSchema, fromToken: caller.bridgeToken)
+        return Self.toolResult(id: id, outcome)
+    }
+
+    private static func toolResult(id: Any?, _ outcome: BridgeResult) -> Data {
+        result(id: id, value: [
+            "content": [["type": "text", "text": outcome.message]],
+            "isError": !outcome.ok,
+        ])
+    }
+
+    /// `commission`'s arguments, trimmed; an empty `provider` is none.
+    private static func commissionArguments(_ args: [String: Any]) -> (
+        callsign: String, cwd: String, provider: String?, scratch: Bool?, outputSchema: String?
+    ) {
+        let cwd = (args["cwd"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+        let provider = (args["provider"] as? String)?.trimmingCharacters(in: .whitespaces)
+        return ((args["callsign"] as? String) ?? "", cwd, (provider?.isEmpty == false) ? provider : nil,
+                args["scratch"] as? Bool, schemaArgument(args["output_schema"]))
     }
 
     /// Why `caller` may not call `name` at all, or nil when it may. The operator may call
@@ -443,6 +480,11 @@ public struct MCPServer {
         guard let me = bridge.manager.session(forToken: token) else {
             return .failure("refused: the session token names no Admiral tab, so no tool is "
                 + "available to this caller")
+        }
+        // A schedule's run is a claude tab on this Mac; an ACP caller's would have to be on its
+        // agent, which the scheduler cannot launch yet.
+        if name.hasPrefix("schedule_"), me.backend.isACP {
+            return .failure("schedules can't target ACP agents yet")
         }
         // An unknown target falls through, so the tool itself answers "no station".
         if let key = Self.ownTabTools[name],
@@ -517,18 +559,11 @@ public struct MCPServer {
             return bridge.setStructuredOutput(fromToken: token, outputJSON: str(args, "output"),
                                               type: args["type"] as? String)
         case "commission":
-            // cwd is required and must exist, so a session never silently lands in the
-            // app's home directory when the caller omits it.
-            let cwd = (args["cwd"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
-            var isDir: ObjCBool = false
-            guard !cwd.isEmpty, FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue else {
-                return .failure("cwd is required and must be an existing directory")
-            }
-            let provider = (args["provider"] as? String)?.trimmingCharacters(in: .whitespaces)
-            return bridge.commission(callsign: str(args, "callsign"), cwd: cwd,
-                                     provider: (provider?.isEmpty == false) ? provider : nil,
-                                     scratch: args["scratch"] as? Bool,
-                                     outputSchema: Self.schemaArgument(args["output_schema"]))
+            // BridgeCore checks cwd where the new tab will run: on this Mac for a claude, in
+            // the agent's environment for an ACP caller's tab (whose paths mean nothing here).
+            let a = Self.commissionArguments(args)
+            return bridge.commission(callsign: a.callsign, cwd: a.cwd, provider: a.provider,
+                                     scratch: a.scratch, outputSchema: a.outputSchema, fromToken: token)
         case "set_output_schema":
             return bridge.setOutputSchema(callsign: str(args, "callsign"),
                                           schemaJSON: Self.schemaArgument(args["schema"]) ?? "")

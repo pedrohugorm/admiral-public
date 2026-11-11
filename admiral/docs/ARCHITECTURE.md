@@ -20,7 +20,10 @@ AdmiralCore (SwiftPM target, ZERO external deps — no UI, no SwiftTerm — `swi
                  (the Stop tripwire — one block per turn, highest-priority armed slot wins)
   Goals/         SessionGoals (+ validation), GoalsStore, GoalsMachine/GoalsService
                  (the idle → probe → nag loop that closes a session's goals)
-  Support/       GitHubEnvironment (token + gh path for a Finder-launched app)
+  ACP/           AcpSessionController (the ACP SessionDriver), JSONRPCConnection, AcpTransport,
+                 TranscriptMirror, AcpHookAdapter, AcpAgentConfig/Store (+ AcpWorkspace),
+                 AcpConfigOptions/AcpOptionCatalogStore, AcpComposerPickers, SessionMCPEndpoint
+  Support/       GitHubEnvironment (token + gh path for a Finder-launched app), CommandRunner
   Terminal/      TerminalHost protocol (the PTY seam)
 
 App (SwiftUI + AppKit + SwiftTerm)
@@ -74,6 +77,55 @@ erroring "session not found").
 **Process discovery**: `ProcessTree.snapshot()` (a `ps` parse — drains the pipe *before*
 `waitUntilExit`, or it deadlocks on >64 KB output) and a descendant-only `findClaudePid`.
 
+## ACP tabs
+
+A tab on an ACP agent (Settings → Agents) has no PTY: `SessionManager` holds a
+`SessionDriver` per tab in `drivers`, and an ACP tab's is an `AcpSessionController` over
+`JSONRPCConnection` (newline-delimited JSON-RPC on the agent's stdio — a process on this Mac,
+or a launch that enters a container / VM / SSH host first).
+Every input funnel — composer, inject, deliver — joins the controller's queue: sent as a
+prompt when idle, as a steer mid-turn when the agent advertises it. Accepted means it will go
+out, so `TabRun` sends once and never retypes.
+
+```
+agent ◀─stdio─▶ JSONRPCConnection ─▶ AcpSessionController ─▶ TranscriptMirror  <base>/acp/<sid>.jsonl
+                                       │                   ─▶ ChatLedger (permission / question cards)
+                                       └─ AcpHookAdapter ──▶ HookDispatcher (same arms as admiral-hook)
+```
+
+- **Mirror transcript.** The agent's own history is out of reach, so the controller writes
+  claude-shaped lines; Chat, `TabRun` and restore read it as a transcript. `session/load`'s
+  replay is dropped when the mirror already exists.
+- **Hooks in-process.** No `--settings` file, so `AcpHookAdapter` dispatches
+  `UserPromptSubmit` / `Stop` / `PostToolUse` / `SessionStart` at the ACP moments. A Stop
+  block's reason is sent as the next prompt, bypassing `UserPromptSubmit`, and recorded in
+  the ledger as Admiral's.
+- **Where the agent runs.** `AcpWorkspace`, chosen per agent ("Runs on"), decided once:
+  `.thisMac` (a Mac `cwd`, bridge URL `http://127.0.0.1:4142`) or `.elsewhere(exec:)` (an
+  explicit prefix that runs one command next to the agent, and a Bridge URL saying how that
+  place reaches the Mac). A legacy docker-shaped agent is migrated on decode.
+- **Where git runs.** `CommandRunner`: the Mac (`LocalCommandRunner`, PATH resolved per run)
+  for PTY tabs and This Mac agents; the agent's environment through its exec
+  (`ExecCommandRunner`, 5 s bound; gh 30 s) for Elsewhere agents — none = git, branch, touched
+  repos and PR watch off. Both pipes are drained while the command runs.
+- **Starting options.** The agent's own config options (mode, model, …; a deprecated `modes`
+  object reads as one `mode` option), saved per agent as `defaultConfigOptions` and picked in
+  Settings from `AcpOptionCatalogStore` (what the agent last advertised). No separate default
+  mode. Applied to a new or forked session, never a restore; an option or value the agent no longer offers is
+  skipped and logged, never sent.
+- **Composer and Chat (ACP tabs only).** Option chips set an option live (a refusal shows
+  above the text); `/` lists the agent's `available_commands`; `@` lists the agent's files
+  (`git ls-files -z` through the tab's runner, cached briefly) and each pick is sent as a
+  `resource_link` beside the typed text. Tool calls become `ChatItem.tool` cards from the
+  mirror's `toolUseResult` — a command's output or an edit's diff (`LineDiff`) — and a running
+  command's streamed output (`AgentSession.acpLiveOutput`, last 8 KB) shows its tail under
+  Working…. PTY tabs never get any of these.
+- **Session bridge (:4142).** `POST /mcp/session` on loopback serves the session tools to an
+  agent that cannot reach the bridge socket — at `127.0.0.1:4142` on This Mac, at the Bridge
+  URL elsewhere. Token-gated (`Bearer <tab token>`, live ACP tabs only, caller always
+  `.session`), `Origin` refused, no port fallback; up only while an agent is configured. :4141
+  (the API server) is unchanged.
+
 ## Hooks (what Admiral still needs delivered)
 
 **Admiral does not govern.** Rule-based governance lives in `hookd` (a separate repo), a Python
@@ -114,6 +166,9 @@ Warp `#181818`). Appearance (auto/light/dark) and sidebar collapse state are per
 |---|---|
 | Per-session appearance (name/color/icon) | `UserDefaults: admiral.sessionAppearances.v2` |
 | Open sessions (for restore, ordered) | `UserDefaults: admiral.openSessions.v1` |
+| ACP agents | `UserDefaults: admiral.acpAgents.v1` |
+| ACP agents' advertised options (Settings' starting-option pickers) | `UserDefaults: admiral.acpOptionCatalog.v1` |
+| ACP mirror transcript + traffic log | `<support>/acp/<sid>.{jsonl,log}` |
 | Theme mode / sidebar collapsed | `UserDefaults: admiral.themeMode / admiral.sidebarCollapsed` |
 | Injected hooks + MCP config, touched-repo log | `<support>/sessions/<token>/{settings.json, bridge-mcp.json, touched.jsonl}` |
 | `once_per_session` rules already fired | `<support>/hooks/fired/<payload session_id>.jsonl` |
